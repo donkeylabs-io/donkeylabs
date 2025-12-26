@@ -17,11 +17,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/donkeylabs/donkeylabs.git",
+    "url": "https://github.com/donkeylabs-io/donkeylabs.git",
     "directory": "packages/api-docs"
   },
   "dependencies": {
-    "@donkeylabs/core": "workspace:*",
+    "@donkeylabs/core": "^0.1.0",
     "shiki": "^3.0.0",
     "zod": "^4.1.12"
   },
