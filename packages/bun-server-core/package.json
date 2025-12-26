@@ -1,0 +1,55 @@
+{
+  "name": "@donkeylabs/bun-server-core",
+  "version": "0.1.0",
+  "description": "Bun server utilities - routing, database, caching, auth, and middleware",
+  "type": "module",
+  "main": "src/index.ts",
+  "module": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": ["src"],
+  "scripts": {
+    "test": "bun test"
+  },
+  "keywords": ["bun", "server", "express", "kysely", "sqlite", "typescript"],
+  "author": "donkeylabs",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/donkeylabs/donkeylabs.git",
+    "directory": "packages/bun-server-core"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/geoip-lite": "^1.4.4",
+    "bun-types": "^1.3.0",
+    "jsonwebtoken": "^9.0.2",
+    "zod": "^4.1.12"
+  },
+  "peerDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@donkeylabs/audit-logs": "workspace:*",
+    "@donkeylabs/core": "workspace:*",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/nodemailer": "^6.4.20",
+    "@types/qrcode": "^1.5.5",
+    "chalk": "^5.6.2",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "geoip-lite": "^1.4.10",
+    "kysely": "^0.28.8",
+    "kysely-bun-sqlite": "^0.4.0",
+    "kysely-codegen": "^0.18.5",
+    "nodemailer": "^7.0.9",
+    "otplib": "^12.0.1",
+    "qrcode": "^1.5.4",
+    "superjson": "^2.2.2",
+    "ua-parser-js": "^2.0.6"
+  }
+}
