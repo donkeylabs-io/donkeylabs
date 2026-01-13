@@ -297,54 +297,54 @@ router.route("process").xml({
 
 ## Custom Middleware
 
-Plugins can provide middleware that can be applied to routes:
+Plugins can provide middleware that can be applied to routes. Middleware is defined as a function that receives `ctx` (PluginContext) and `service` (the plugin's own service), and returns middleware definitions:
 
 ```ts
 // plugins/auth/index.ts
-import { createPlugin } from "../../core";
-import { createMiddleware } from "../../middleware";
+import { createPlugin, createMiddleware } from "@donkeylabs/server";
 
 export interface AuthRequiredConfig {
   roles?: string[];
 }
 
-const AuthRequiredMiddleware = createMiddleware<AuthRequiredConfig>(
-  async (req, ctx, next, config) => {
-    const token = req.headers.get("Authorization")?.replace("Bearer ", "");
-
-    if (!token) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    // Verify token and set user
-    const user = await verifyToken(token);
-    ctx.user = user;
-
-    // Check roles if specified
-    if (config?.roles && !config.roles.some((r) => user.roles.includes(r))) {
-      return new Response(JSON.stringify({ error: "Forbidden" }), {
-        status: 403,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    return next();
-  }
-);
-
 export const authPlugin = createPlugin.define({
   name: "auth",
-  middleware: {
-    authRequired: AuthRequiredMiddleware,
-  },
+
+  // Service must come BEFORE middleware for TypeScript to infer types
   service: async (ctx) => ({
-    // Auth service methods...
+    async validateToken(token: string) {
+      // Token validation logic...
+      return { id: 1, name: "User", roles: ["user"] };
+    },
+  }),
+
+  // Middleware receives (ctx, service) - can use its own service!
+  middleware: (ctx, service) => ({
+    authRequired: createMiddleware<AuthRequiredConfig>(
+      async (req, reqCtx, next, config) => {
+        const token = req.headers.get("Authorization")?.replace("Bearer ", "");
+
+        if (!token) {
+          return Response.json({ error: "Unauthorized" }, { status: 401 });
+        }
+
+        // Use the plugin's own service for validation
+        const user = await service.validateToken(token);
+        reqCtx.user = user;
+
+        // Check roles if specified
+        if (config?.roles && !config.roles.some((r) => user.roles.includes(r))) {
+          return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
+
+        return next();
+      }
+    ),
   }),
 });
 ```
+
+**Important:** The `service` property must come before `middleware` in the plugin definition for TypeScript to correctly infer the service type.
 
 **Using middleware in routes:**
 
@@ -461,18 +461,56 @@ function processUser(service: UsersService) {
 
 ---
 
+## Init Hook
+
+The `init` hook runs after the service is created, allowing you to register crons, events, and other runtime setup. It receives `ctx` (PluginContext) and `service` (the plugin's own service):
+
+```ts
+export const statsPlugin = createPlugin.define({
+  name: "stats",
+
+  service: async (ctx) => ({
+    recordRequest(route: string, durationMs: number) { /* ... */ },
+    getStats() { /* ... */ },
+  }),
+
+  // Init runs after service is created
+  init: (ctx, service) => {
+    const logger = ctx.core.logger.child({ plugin: "stats" });
+
+    // Schedule periodic stats logging
+    ctx.core.cron.schedule("* * * * *", () => {
+      const stats = service.getStats();  // Use own service!
+      logger.info("Server stats", {
+        requests: stats.totalRequests,
+        avgMs: stats.avgResponseTime.toFixed(2),
+      });
+    }, { name: "stats-reporter" });
+
+    // Listen for events
+    ctx.core.events.on("request.completed", (data) => {
+      service.recordRequest(data.route, data.duration);
+    });
+  },
+});
+```
+
+---
+
 ## Plugin Lifecycle
 
 1. **Registration** - `server.registerPlugin(plugin)` adds plugin to manager
 2. **Validation** - At startup, dependencies are validated
 3. **Migration** - `await manager.migrate()` runs all plugin migrations in order
-4. **Initialization** - `await manager.init()` calls each plugin's `service()` function
+4. **Initialization** - `await manager.init()` calls `service()`, then `middleware()`, then `init()`
 5. **Runtime** - Services available via `ctx.plugins` in route handlers
 
 ```
 Registration → Validation → Migration → Initialization → Runtime
      ↓             ↓            ↓             ↓            ↓
-  register()   check deps   run SQL      service()   ctx.plugins
+  register()   check deps   run SQL    service() →     ctx.plugins
+                                       middleware() →
+                                       init()
 ```
 
 ---

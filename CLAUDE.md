@@ -57,9 +57,10 @@ Bun automatically loads `.env` - don't use dotenv.
 │   ├── init/               # New project templates
 │   └── plugin/             # Plugin scaffolding templates
 ├── examples/               # Example projects
-│   └── basic-server/       # Complete example
+│   └── starter/            # Complete starter template
 │       ├── src/index.ts
-│       ├── src/plugins/    # Example plugins (auth, counter, stats)
+│       ├── src/plugins/    # Example plugins (stats with middleware)
+│       ├── src/routes/     # Example routes with typing
 │       └── donkeylabs.config.ts
 ├── scripts/                # Build and generation scripts
 ├── test/                   # Test files
@@ -271,8 +272,13 @@ import { createTestHarness } from "@donkeylabs/server/harness";
 2. Restart TypeScript language server (Cmd+Shift+P > "Restart TS Server")
 
 ### Plugin types not recognized
-1. Ensure file has `/// <reference path=".@donkeylabs/server/registry.d.ts" />`
+1. Ensure `.@donkeylabs/server` is in your tsconfig's `include` array
 2. Run `donkeylabs generate`
+
+### ctx.plugins shows as `any`
+1. Make sure `service` comes BEFORE `middleware` in plugin definition
+2. Run `donkeylabs generate` to regenerate types
+3. Restart TypeScript language server
 
 ### Core services undefined
 1. Check `ServerConfig` has required `db` property
@@ -295,3 +301,73 @@ Use Bun's built-in APIs instead of npm packages:
 | `Bun.$\`cmd\`` | execa |
 
 See `node_modules/bun-types/docs/**.md` for full API documentation.
+
+---
+
+## Documentation
+
+Detailed documentation is available in the `docs/` directory:
+
+| Document | Description |
+|----------|-------------|
+| [plugins.md](docs/plugins.md) | Creating plugins, schemas, dependencies, middleware, and init hooks |
+| [router.md](docs/router.md) | Routes, handlers, input/output validation, middleware chains |
+| [middleware.md](docs/middleware.md) | Creating and using middleware with typed configuration |
+| [handlers.md](docs/handlers.md) | Custom handlers (typed, raw, plugin handlers) |
+| [core-services.md](docs/core-services.md) | Overview of all core services |
+| [logger.md](docs/logger.md) | Structured logging with child loggers |
+| [cache.md](docs/cache.md) | In-memory caching with TTL |
+| [events.md](docs/events.md) | Pub/sub event system |
+| [cron.md](docs/cron.md) | Scheduled tasks |
+| [jobs.md](docs/jobs.md) | Background job queue |
+| [sse.md](docs/sse.md) | Server-sent events |
+| [rate-limiter.md](docs/rate-limiter.md) | Request rate limiting |
+| [errors.md](docs/errors.md) | Error factories and custom errors |
+| [api-client.md](docs/api-client.md) | Generated API client usage |
+| [project-structure.md](docs/project-structure.md) | Recommended project organization |
+| [cli.md](docs/cli.md) | CLI commands and interactive mode |
+| [svelte-frontend.md](docs/svelte-frontend.md) | Svelte 5 frontend integration |
+
+---
+
+## MCP Server (AI Integration)
+
+An MCP server is available for AI assistants to create and manage plugins following project conventions.
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `create_plugin` | Create a new plugin with correct structure |
+| `add_route` | Add a route to a router with proper typing |
+| `add_migration` | Create a numbered migration file |
+| `add_service_method` | Add a method to a plugin's service |
+| `generate_types` | Run type generation |
+| `list_plugins` | List all plugins with their methods |
+| `get_project_info` | Get project structure info |
+
+### Configuration
+
+Add to your Claude Code MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "donkeylabs": {
+      "command": "bun",
+      "args": ["/path/to/project/mcp/server.ts"]
+    }
+  }
+}
+```
+
+### Example Usage
+
+AI can call these tools to scaffold code correctly:
+
+```
+Tool: create_plugin
+Args: { "name": "notifications", "hasSchema": true, "dependencies": ["auth"] }
+
+Result: Creates src/plugins/notifications/ with index.ts, schema.ts, migrations/
+```

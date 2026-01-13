@@ -105,21 +105,46 @@ export const authMiddleware = createMiddleware<AuthConfig>(
 
 ### Step 2: Register in Plugin
 
+Middleware is defined as a function that receives `(ctx, service)` and returns middleware definitions:
+
 ```ts
 // plugins/auth/index.ts
-import { createPlugin } from "../../core";
-import { authMiddleware } from "./middleware";
+import { createPlugin, createMiddleware } from "@donkeylabs/server";
 
 export const authPlugin = createPlugin.define({
   name: "auth",
-  middleware: {
-    auth: authMiddleware,  // Key becomes method name
-  },
+
+  // Service MUST come before middleware for type inference
   service: async (ctx) => ({
-    // Auth service methods...
+    async validateToken(token: string) {
+      // Validation logic...
+      return { id: 1, name: "User" };
+    },
+  }),
+
+  // Middleware receives (ctx, service) - can access its own service!
+  middleware: (ctx, service) => ({
+    auth: createMiddleware<{ required?: boolean }>(
+      async (req, reqCtx, next, config) => {
+        const token = req.headers.get("Authorization")?.replace("Bearer ", "");
+
+        if (!token && config?.required) {
+          return Response.json({ error: "Unauthorized" }, { status: 401 });
+        }
+
+        if (token) {
+          // Use own service for validation
+          reqCtx.user = await service.validateToken(token);
+        }
+
+        return next();
+      }
+    ),
   }),
 });
 ```
+
+**Important:** The `service` property must come before `middleware` in the plugin definition for TypeScript to correctly infer the service type.
 
 ### Step 3: Regenerate Registry
 
