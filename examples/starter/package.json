@@ -1,0 +1,20 @@
+{
+  "name": "starter",
+  "type": "module",
+  "scripts": {
+    "dev": "donkeylabs dev",
+    "start": "bun src/index.ts",
+    "test": "bun test",
+    "gen:types": "donkeylabs generate",
+    "cli": "donkeylabs"
+  },
+  "dependencies": {
+    "@donkeylabs/server": "file:../..",
+    "kysely": "^0.27.0",
+    "kysely-bun-sqlite": "^0.3.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

@@ -11,18 +11,12 @@ import type { SSE } from "./core/sse";
 import type { RateLimiter } from "./core/rate-limiter";
 import type { Errors, CustomErrorRegistry } from "./core/errors";
 
-// ==========================================
-// 1. Global Registry & Type Definitions
-// ==========================================
-
 export interface PluginRegistry {}
 
-// Client-side configuration for plugins
 export interface ClientConfig {
   credentials?: "include" | "same-origin" | "omit";
 }
 
-// SSE Event definition (name -> Zod schema)
 export type EventSchemas = Record<string, z.ZodType<any>>;
 
 export type Register<
@@ -43,12 +37,8 @@ export type Register<
   events: Events;
 };
 
-// Interface for plugins to inject handlers into.
-// router.ts will extend this.
 export interface PluginHandlerRegistry {}
 
-// Interface for plugins to inject middleware into.
-// router.ts will extend this.
 export interface PluginMiddlewareRegistry {}
 
 export interface CoreServices {
@@ -64,9 +54,30 @@ export interface CoreServices {
   errors: Errors;
 }
 
-// ==========================================
-// 2. Plugin Context
-// ==========================================
+/**
+ * Global context interface used in route handlers.
+ * The `plugins` property is typed via PluginRegistry augmentation.
+ */
+export interface GlobalContext {
+  /** Database instance */
+  db: Kysely<any>;
+  /** Plugin services - typed via PluginRegistry augmentation */
+  plugins: {
+    [K in keyof PluginRegistry]: PluginRegistry[K]["service"];
+  };
+  /** Core services (logger, cache, events, etc.) */
+  core: Omit<CoreServices, "db" | "config" | "errors">;
+  /** Error factories (BadRequest, NotFound, etc.) */
+  errors: Errors;
+  /** Application config */
+  config: Record<string, any>;
+  /** Client IP address */
+  ip: string;
+  /** Unique request ID */
+  requestId: string;
+  /** Authenticated user (set by auth middleware) */
+  user?: any;
+}
 
 export class PluginContext<Deps = any, Schema = any, Config = void> {
   constructor(
@@ -80,20 +91,13 @@ export class PluginContext<Deps = any, Schema = any, Config = void> {
   }
 }
 
-// ==========================================
-// 3. Functional Plugin Definition (Builder Pattern)
-// ==========================================
-
-// Helper: Convert union to intersection
 type UnionToIntersection<U> =
   (U extends any ? (k: U) => void : never) extends ((k: infer I) => void) ? I : never;
 
-// Extract a single plugin's schema
 type ExtractPluginSchema<K> = K extends keyof PluginRegistry
   ? PluginRegistry[K] extends { schema: infer S } ? S : {}
   : {};
 
-// Extract services from dependencies
 type ExtractServices<T extends readonly (keyof PluginRegistry)[] | undefined> =
   T extends readonly []
     ? {}
@@ -103,7 +107,6 @@ type ExtractServices<T extends readonly (keyof PluginRegistry)[] | undefined> =
         : {}
       : {};
 
-// Extract and merge schemas from dependencies (intersection, not union)
 type ExtractSchemas<T extends readonly (keyof PluginRegistry)[] | undefined> =
   T extends readonly []
     ? {}
@@ -111,15 +114,9 @@ type ExtractSchemas<T extends readonly (keyof PluginRegistry)[] | undefined> =
       ? UnionToIntersection<ExtractPluginSchema<K>>
       : {};
 
-// ==========================================
-// Dependency Validation Types
-// ==========================================
-
-// Error type for self-dependency
 type SelfDependencyError<Name extends string> =
   `Error: Plugin '${Name}' cannot depend on itself`;
 
-// Check if a plugin depends on another plugin
 type PluginDependsOn<
   PluginName extends keyof PluginRegistry,
   Target extends string
@@ -129,7 +126,6 @@ type PluginDependsOn<
     : false
   : false;
 
-// Find which dependency creates a circular reference
 type FindCircularDep<
   Name extends string,
   Deps extends readonly (keyof PluginRegistry)[]
@@ -137,11 +133,9 @@ type FindCircularDep<
   [K in Deps[number]]: PluginDependsOn<K, Name> extends true ? K : never
 }[Deps[number]];
 
-// Error type for circular dependency
 type CircularDependencyError<Name extends string, CircularDep extends string> =
   `Error: Circular dependency - '${CircularDep}' already depends on '${Name}'`;
 
-// Validate dependencies don't include self or create circular refs
 type ValidateDeps<
   Name extends string,
   Deps extends readonly (keyof PluginRegistry)[]
@@ -169,12 +163,10 @@ export interface PluginConfig<
   middleware?: Middleware;
 }
 
-// Plugin factory type - a function that takes config and returns a configured plugin
 export type PluginFactory<Config, P extends Plugin = Plugin> = ((config: Config) => P) & {
   _configType: Config;
 };
 
-// Builder for plugins WITHOUT config - returns plugin directly
 export class PluginBuilder<LocalSchema = {}> {
   withSchema<S>(): PluginBuilder<S> {
     return new PluginBuilder<S>();
@@ -198,22 +190,34 @@ export class PluginBuilder<LocalSchema = {}> {
       version?: string;
       dependencies?: ValidateDeps<Name, Deps> extends Deps ? Deps : ValidateDeps<Name, Deps>;
       handlers?: Handlers;
-      middleware?: Middleware;
+      /** Middleware function - receives typed context and service, returns middleware definitions */
+      middleware?: (
+        ctx: PluginContext<ExtractServices<Deps>, LocalSchema & ExtractSchemas<Deps>, void>,
+        service: Service
+      ) => Middleware;
       events?: Events;
       client?: ClientConfig;
-      /** Custom HTTP errors this plugin provides (e.g., PaymentRequired, UserSuspended) */
       customErrors?: CustomErrors;
       service: (
         ctx: PluginContext<ExtractServices<Deps>, LocalSchema & ExtractSchemas<Deps>, void>
       ) => Promise<Service> | Service;
+      /** Called after service is created - use for registering crons, events, etc. */
+      init?: (
+        ctx: PluginContext<ExtractServices<Deps>, LocalSchema & ExtractSchemas<Deps>, void>,
+        service: Service
+      ) => void | Promise<void>;
     }
   ): Plugin & {
     name: Name;
     _dependencies: Deps;
     _schema: LocalSchema;
     _fullSchema: LocalSchema & ExtractSchemas<Deps>;
+    /** Typed service function - preserves Service type for InferService */
+    service: (ctx: PluginContext<ExtractServices<Deps>, LocalSchema & ExtractSchemas<Deps>, void>) => Promise<Service> | Service;
+    /** Typed service return for direct access */
+    _service: Service;
     handlers?: Handlers;
-    middleware?: Middleware;
+    middleware?: (ctx: PluginContext<ExtractServices<Deps>, LocalSchema & ExtractSchemas<Deps>, void>, service: Service) => Middleware;
     events?: Events;
     client?: ClientConfig;
     customErrors?: CustomErrors;
@@ -222,7 +226,6 @@ export class PluginBuilder<LocalSchema = {}> {
   }
 }
 
-// Builder for plugins WITH config - returns factory function
 export class ConfiguredPluginBuilder<LocalSchema, Config> {
   withSchema<S>(): ConfiguredPluginBuilder<S, Config> {
     return new ConfiguredPluginBuilder<S, Config>();
@@ -242,14 +245,22 @@ export class ConfiguredPluginBuilder<LocalSchema, Config> {
       version?: string;
       dependencies?: ValidateDeps<Name, Deps> extends Deps ? Deps : ValidateDeps<Name, Deps>;
       handlers?: Handlers;
-      middleware?: Middleware;
+      /** Middleware function - receives typed context and service, returns middleware definitions */
+      middleware?: (
+        ctx: PluginContext<ExtractServices<Deps>, LocalSchema & ExtractSchemas<Deps>, Config>,
+        service: Service
+      ) => Middleware;
       events?: Events;
       client?: ClientConfig;
-      /** Custom HTTP errors this plugin provides (e.g., PaymentRequired, UserSuspended) */
       customErrors?: CustomErrors;
       service: (
         ctx: PluginContext<ExtractServices<Deps>, LocalSchema & ExtractSchemas<Deps>, Config>
       ) => Promise<Service> | Service;
+      /** Called after service is created - use for registering crons, events, etc. */
+      init?: (
+        ctx: PluginContext<ExtractServices<Deps>, LocalSchema & ExtractSchemas<Deps>, Config>,
+        service: Service
+      ) => void | Promise<void>;
     }
   ): PluginFactory<Config, Plugin & {
     name: Name;
@@ -257,13 +268,16 @@ export class ConfiguredPluginBuilder<LocalSchema, Config> {
     _schema: LocalSchema;
     _fullSchema: LocalSchema & ExtractSchemas<Deps>;
     _config: Config;
+    /** Typed service function - preserves Service type for InferService */
+    service: (ctx: PluginContext<ExtractServices<Deps>, LocalSchema & ExtractSchemas<Deps>, Config>) => Promise<Service> | Service;
+    /** Typed service return for direct access */
+    _service: Service;
     handlers?: Handlers;
-    middleware?: Middleware;
+    middleware?: (ctx: PluginContext<ExtractServices<Deps>, LocalSchema & ExtractSchemas<Deps>, Config>, service: Service) => Middleware;
     events?: Events;
     client?: ClientConfig;
     customErrors?: CustomErrors;
   }> {
-    // Return a factory function that binds config to the plugin
     const factory = (config: Config) => ({
       ...pluginDef,
       _boundConfig: config,
@@ -274,50 +288,41 @@ export class ConfiguredPluginBuilder<LocalSchema, Config> {
 
 export const createPlugin: PluginBuilder<{}> = new PluginBuilder();
 
-// Helper to unwrap plugin factory to get the plugin type
 type UnwrapPluginFactory<T> = T extends (config: any) => infer P ? P : T;
 
-// Type inference helpers - work with both direct plugins and factory functions
-export type InferService<T> = UnwrapPluginFactory<T> extends { service: (ctx: any) => Promise<infer S> | infer S }
+export type InferService<T> = UnwrapPluginFactory<T> extends { _service: infer S }
   ? S
-  : UnwrapPluginFactory<T> extends { service: (...args: any[]) => infer S }
-  ? Awaited<S>
   : never;
 export type InferSchema<T> = UnwrapPluginFactory<T> extends { _schema: infer S } ? S : never;
 export type InferHandlers<T> = UnwrapPluginFactory<T> extends { handlers?: infer H } ? H : {};
-export type InferMiddleware<T> = UnwrapPluginFactory<T> extends { middleware?: infer M } ? M : {};
+export type InferMiddleware<T> = UnwrapPluginFactory<T> extends { middleware?: (ctx: any) => infer M } ? M : {};
 export type InferDependencies<T> = UnwrapPluginFactory<T> extends { _dependencies: infer D } ? D : readonly [];
 export type InferConfig<T> = T extends (config: infer C) => any ? C : void;
 export type InferEvents<T> = UnwrapPluginFactory<T> extends { events?: infer E } ? E : {};
 export type InferClientConfig<T> = UnwrapPluginFactory<T> extends { client?: infer C } ? C : undefined;
 export type InferCustomErrors<T> = UnwrapPluginFactory<T> extends { customErrors?: infer E } ? E : {};
 
-// Export helper types for debugging/testing
 export type { ExtractServices, ExtractSchemas };
 
-// Valid runtime plugin structure (erased types)
 export type Plugin = {
     name: string;
     version?: string;
     dependencies?: readonly string[];
     handlers?: Record<string, any>;
-    middleware?: Record<string, any>;
+    /** Middleware function - receives PluginContext and service, returns middleware definitions */
+    middleware?: (ctx: any, service: any) => Record<string, any>;
     events?: Record<string, any>;
     client?: ClientConfig;
     customErrors?: CustomErrorRegistry;
     service: (ctx: any) => any;
+    /** Called after service is created - use for registering crons, events, etc. */
+    init?: (ctx: any, service: any) => void | Promise<void>;
 };
 
-// Plugin with config type information preserved
 export type PluginWithConfig<Config = void> = Plugin & {
     _config?: Config;
 };
 
-// ==========================================
-// 4. Plugin Manager
-// ==========================================
-
-// Plugin with bound config (returned by factory function)
 export type ConfiguredPlugin = Plugin & { _boundConfig?: any };
 
 export class PluginManager {
@@ -329,7 +334,6 @@ export class PluginManager {
     this.core = core;
   }
 
-  // Public accessor for services (used by ServerContext)
   getServices(): any {
       return this.services;
   }
@@ -349,13 +353,12 @@ export class PluginManager {
     this.plugins.set(plugin.name, plugin);
   }
 
-  async migrate() {
+  async migrate(): Promise<void> {
     console.log("Running migrations (File-System Based)...");
     const sortedPlugins = this.resolveOrder();
 
     for (const plugin of sortedPlugins) {
         const pluginName = plugin.name;
-        // Try multiple locations for migrations (examples for dev, or user's plugins dir)
         const possibleMigrationDirs = [
           join(process.cwd(), "examples/basic-server/src/plugins", pluginName, "migrations"),
           join(process.cwd(), "src/plugins", pluginName, "migrations"),
@@ -369,7 +372,7 @@ export class PluginManager {
             migrationDir = dir;
             break;
           } catch {
-            // Try next location
+            continue;
           }
         }
 
@@ -390,38 +393,34 @@ export class PluginManager {
                      if (migration.up) {
                          try {
                               await migration.up(this.core.db);
-                              console.log(`    ✅ Success`);
+                              console.log(`    Success`);
                          } catch (e) {
-                             console.error(`    ❌ Failed to run ${file}:`, e);
+                             console.error(`    Failed to run ${file}:`, e);
                          }
                      }
                  }
              }
-        } catch (e) {
-            // Ignore missing dir
+        } catch {
+            // Migration directory doesn't exist, skip
         }
     }
   }
 
-  async init() {
-    // 1. Validate dependencies exist
-    for (const port of this.plugins.values()) {
-      const deps = port.dependencies || [];
+  async init(): Promise<void> {
+    for (const plugin of this.plugins.values()) {
+      const deps = plugin.dependencies || [];
       for (const dep of deps) {
         if (!this.plugins.has(dep)) {
-          throw new Error(`Plugin '${port.name}' depends on '${dep}', but it is not registered.`);
+          throw new Error(`Plugin '${plugin.name}' depends on '${dep}', but it is not registered.`);
         }
       }
     }
 
-    // 2. Sort plugins
     const sortedPlugins = this.resolveOrder();
 
-    // 3. Init each
     for (const plugin of sortedPlugins) {
         console.log(`Initializing plugin: ${plugin.name}`);
 
-        // Register custom errors from this plugin
         if (plugin.customErrors) {
             for (const [errorName, errorDef] of Object.entries(plugin.customErrors)) {
                 this.core.errors.register(errorName, errorDef);
@@ -429,24 +428,32 @@ export class PluginManager {
             }
         }
 
-        // Build the dependency object dynamically
-        const pluginDeps: any = {};
+        const pluginDeps: Record<string, unknown> = {};
         if (plugin.dependencies) {
             for (const depName of plugin.dependencies) {
                 pluginDeps[depName] = this.services[depName];
             }
         }
 
-        // Get config from bound plugin (if using factory pattern)
         const pluginConfig = (plugin as ConfiguredPlugin)._boundConfig;
-
         const ctx = new PluginContext(this.core, pluginDeps, pluginConfig);
         const service = await plugin.service(ctx);
 
-        // Register the returned service
         if (service) {
             this.services[plugin.name] = service;
             console.log(`[${plugin.name}] Service registered.`);
+        }
+
+        // Resolve middleware function if present (pass service so middleware can use it)
+        if (plugin.middleware && typeof plugin.middleware === "function") {
+            const resolvedMiddleware = plugin.middleware(ctx, service);
+            // Store resolved middleware back on plugin for server to access
+            (plugin as any)._resolvedMiddleware = resolvedMiddleware;
+        }
+
+        // Call init hook for registering crons, events, etc.
+        if (plugin.init) {
+            await plugin.init(ctx, service);
         }
     }
 
