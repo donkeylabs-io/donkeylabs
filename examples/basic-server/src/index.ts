@@ -1,4 +1,9 @@
-/// <reference path="./registry.d.ts" />
+/**
+ * Basic Server Example
+ *
+ * This example demonstrates how to use @donkeylabs/server with plugins.
+ */
+
 import {
   Kysely,
   DummyDriver,
@@ -6,18 +11,15 @@ import {
   SqliteIntrospector,
   SqliteQueryCompiler,
 } from "kysely";
-import { AppServer } from "./server";
-import { createRouter } from "./router";
+import { AppServer, createRouter } from "@donkeylabs/server";
+import { z } from "zod";
+
+// Import plugins
 import { authPlugin } from "./plugins/auth";
 import { counterPlugin } from "./plugins/counter";
 import { statsPlugin } from "./plugins/stats";
-import { z } from "zod";
-import "./registry";
 
-// ==========================================
-// 1. Setup Database
-// ==========================================
-
+// Setup Database
 const db = new Kysely<any>({
   dialect: {
     createAdapter: () => new SqliteAdapter(),
@@ -27,32 +29,28 @@ const db = new Kysely<any>({
   },
 });
 
-// ==========================================
-// 2. Create Server & Register Plugins
-// ==========================================
-
+// Create Server
 const server = new AppServer({
   port: 3000,
   db,
   config: { env: "development" },
 });
 
-// Register plugins (call factory for plugins with config)
-server.registerPlugin(authPlugin({
-  privateKey: "super-secret-key-for-jwt",
-  tokenExpiry: 7200,
-  issuer: "my-app",
-}));
-
+// Register Plugins
+server.registerPlugin(
+  authPlugin({
+    privateKey: "super-secret-key",
+    tokenExpiry: 3600,
+    issuer: "example-app",
+  })
+);
 server.registerPlugin(counterPlugin);
 server.registerPlugin(statsPlugin); // Depends on counter
 
-// ==========================================
-// 3. Define Routes
-// ==========================================
-
-const appRouter = createRouter("api")
-  .route("counter.increment").typed({
+// Define Routes
+const router = createRouter("api")
+  .route("counter.increment")
+  .typed({
     input: z.object({ name: z.string() }),
     output: z.object({ value: z.number() }),
     handle: async (input, ctx) => {
@@ -60,7 +58,8 @@ const appRouter = createRouter("api")
       return { value };
     },
   })
-  .route("counter.get").typed({
+  .route("counter.get")
+  .typed({
     input: z.object({ name: z.string() }),
     output: z.object({ value: z.number() }),
     handle: async (input, ctx) => {
@@ -68,7 +67,8 @@ const appRouter = createRouter("api")
       return { value };
     },
   })
-  .route("stats.snapshot").typed({
+  .route("stats.snapshot")
+  .typed({
     input: z.object({ counterName: z.string() }),
     output: z.object({ value: z.number() }),
     handle: async (input, ctx) => {
@@ -76,18 +76,19 @@ const appRouter = createRouter("api")
       return { value };
     },
   })
-  .route("stats.summary").typed({
+  .route("stats.summary")
+  .typed({
     input: z.object({}),
-    output: z.object({ totalCounters: z.number(), totalSnapshots: z.number() }),
+    output: z.object({
+      totalCounters: z.number(),
+      totalSnapshots: z.number(),
+    }),
     handle: async (_input, ctx) => {
       return ctx.plugins.stats.summary();
     },
   });
 
-server.use(appRouter);
+server.use(router);
 
-// ==========================================
-// 4. Start Server
-// ==========================================
-
+// Start Server
 await server.start();

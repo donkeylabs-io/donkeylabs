@@ -1,6 +1,6 @@
-/// <reference path="./registry.d.ts" />
+/// <reference path="../registry.d.ts" />
 import { z } from "zod";
-import type { GlobalContext } from "./context";
+import type { GlobalContext } from "../context";
 import type { PluginHandlerRegistry } from "./core";
 import type { MiddlewareDefinition } from "./middleware";
 

@@ -1,4 +1,4 @@
-import { createPlugin } from "../../core";
+import { createPlugin } from "@donkeylabs/server";
 import type { DB as StatsSchema } from "./schema";
 
 export interface StatsService {

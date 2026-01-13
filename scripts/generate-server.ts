@@ -5,7 +5,7 @@ async function main() {
   console.log("Generating Server Context...");
 
   // Find all plugins to generate schema intersection
-  const pluginsDir = join(process.cwd(), "plugins");
+  const pluginsDir = join(process.cwd(), "examples/basic-server/src/plugins");
   let pluginNames: string[] = [];
 
   try {
@@ -31,8 +31,8 @@ async function main() {
 // Do not edit manually.
 
 /// <reference path="./registry.d.ts" />
-import type { PluginRegistry, CoreServices } from "./core";
-import type { Errors } from "./core/errors";
+import type { PluginRegistry, CoreServices } from "./src/core";
+import type { Errors } from "./src/core/errors";
 import type { Kysely } from "kysely";
 
 // Intersection of all plugin schemas - enables db.selectFrom("users"), db.selectFrom("posts"), etc.

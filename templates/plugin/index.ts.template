@@ -1,0 +1,25 @@
+import { createPlugin } from "@donkeylabs/server";
+// import type { DB as {{PascalName}}Schema } from "./schema";
+
+export interface {{PascalName}}Service {
+  // Define your service interface here
+  getData(): Promise<string>;
+}
+
+export const {{camelName}}Plugin = createPlugin
+  // .withSchema<{{PascalName}}Schema>()  // Uncomment if using database schema
+  .define({
+    name: "{{name}}",
+    version: "1.0.0",
+    // dependencies: ["otherPlugin"] as const,  // Uncomment if depending on other plugins
+
+    service: async (ctx): Promise<{{PascalName}}Service> => {
+      console.log("[{{PascalName}}Plugin] Initializing...");
+
+      return {
+        getData: async () => {
+          return "Hello from {{name}} plugin!";
+        },
+      };
+    },
+  });

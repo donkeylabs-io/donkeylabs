@@ -2,10 +2,10 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import { Kysely } from "kysely";
 import { BunSqliteDialect } from "kysely-bun-sqlite";
 import { Database } from "bun:sqlite";
-import { PluginManager, type CoreServices } from "../core";
-import { authPlugin } from "../plugins/auth";
-import { counterPlugin } from "../plugins/counter";
-import { statsPlugin } from "../plugins/stats";
+import { PluginManager, type CoreServices } from "../src/core";
+import { authPlugin } from "../examples/basic-server/src/plugins/auth";
+import { counterPlugin } from "../examples/basic-server/src/plugins/counter";
+import { statsPlugin } from "../examples/basic-server/src/plugins/stats";
 import {
   createLogger,
   createCache,
@@ -15,7 +15,7 @@ import {
   createSSE,
   createRateLimiter,
   createErrors,
-} from "../core/index";
+} from "../src/core/index";
 
 // Helper to create full CoreServices for tests
 function createTestCoreServices(db: Kysely<any>): CoreServices {

@@ -817,7 +817,7 @@ async function main() {
 
   // Copy base.ts if not already in output directory
   const basePath = join(outputDir, "base.ts");
-  const sourceBasePath = join(process.cwd(), "client", "base.ts");
+  const sourceBasePath = join(process.cwd(), "src/client", "base.ts");
 
   if (existsSync(sourceBasePath) && outputDir !== join(process.cwd(), "client")) {
     const baseContent = await readFile(sourceBasePath, "utf-8");

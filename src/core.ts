@@ -355,7 +355,25 @@ export class PluginManager {
 
     for (const plugin of sortedPlugins) {
         const pluginName = plugin.name;
-        const migrationDir = join(process.cwd(), "plugins", pluginName, "migrations");
+        // Try multiple locations for migrations (examples for dev, or user's plugins dir)
+        const possibleMigrationDirs = [
+          join(process.cwd(), "examples/basic-server/src/plugins", pluginName, "migrations"),
+          join(process.cwd(), "src/plugins", pluginName, "migrations"),
+          join(process.cwd(), "plugins", pluginName, "migrations"),
+        ];
+
+        let migrationDir = "";
+        for (const dir of possibleMigrationDirs) {
+          try {
+            await readdir(dir);
+            migrationDir = dir;
+            break;
+          } catch {
+            // Try next location
+          }
+        }
+
+        if (!migrationDir) continue;
 
         try {
              const files = await readdir(migrationDir);

@@ -17,7 +17,7 @@ import {
   type Jobs,
   type SSE,
   type RateLimiter,
-} from "../core/index";
+} from "../src/core/index";
 
 // ==========================================
 // Logger Tests

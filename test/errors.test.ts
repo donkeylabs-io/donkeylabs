@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import { Kysely } from "kysely";
 import { BunSqliteDialect } from "kysely-bun-sqlite";
 import { Database } from "bun:sqlite";
-import { PluginManager, createPlugin, type CoreServices } from "../core";
+import { PluginManager, createPlugin, type CoreServices } from "../src/core";
 import {
   createErrors,
   createLogger,
@@ -20,7 +20,7 @@ import {
   ConflictError,
   InternalServerError,
   createValidationError,
-} from "../core/index";
+} from "../src/core/index";
 
 // ==========================================
 // Error System Unit Tests

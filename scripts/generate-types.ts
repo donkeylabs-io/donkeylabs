@@ -4,7 +4,7 @@ import { unlink } from "node:fs/promises";
 import { Kysely } from "kysely";
 import { BunSqliteDialect } from "kysely-bun-sqlite";
 import { Database } from "bun:sqlite";
-import { PluginManager, type CoreServices } from "../core";
+import { PluginManager, type CoreServices } from "../src/core";
 import { generate, KyselyBunSqliteDialect } from "kysely-codegen";
 import { parseArgs } from "util";
 import {
@@ -16,7 +16,7 @@ import {
   createSSE,
   createRateLimiter,
   createErrors,
-} from "../core/index";
+} from "../src/core/index";
 
 // Parse CLI args
 const { values, positionals } = parseArgs({
@@ -48,7 +48,7 @@ async function main() {
 
   // 2. Run Migrations
   try {
-    const pluginModule = await import(`../plugins/${pluginName}/index.ts`);
+    const pluginModule = await import(`../examples/basic-server/src/plugins/${pluginName}/index.ts`);
     const pluginObj = Object.values(pluginModule).find((e: any) => e?.name === pluginName);
     
     if (!pluginObj) throw new Error("Plugin object not found (must export object with 'name' property)");

@@ -4,7 +4,7 @@ import {
   ApiError,
   ValidationError,
   type RequestOptions,
-} from "../client/base";
+} from "../src/client/base";
 
 // ==========================================
 // Unit Tests for API Client Base

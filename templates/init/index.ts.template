@@ -1,0 +1,41 @@
+import {
+  Kysely,
+  DummyDriver,
+  SqliteAdapter,
+  SqliteIntrospector,
+  SqliteQueryCompiler,
+} from "kysely";
+import { AppServer, createRouter } from "@donkeylabs/server";
+import { z } from "zod";
+
+// Setup Database (replace with your actual database)
+const db = new Kysely<any>({
+  dialect: {
+    createAdapter: () => new SqliteAdapter(),
+    createDriver: () => new DummyDriver(),
+    createIntrospector: (db) => new SqliteIntrospector(db),
+    createQueryCompiler: () => new SqliteQueryCompiler(),
+  },
+});
+
+// Create Server
+const server = new AppServer({
+  port: 3000,
+  db,
+  config: { env: process.env.NODE_ENV || "development" },
+});
+
+// Define Routes
+const router = createRouter("api")
+  .route("hello").typed({
+    input: z.object({ name: z.string().optional() }),
+    output: z.object({ message: z.string() }),
+    handle: async (input, ctx) => {
+      return { message: `Hello, ${input.name || "World"}!` };
+    },
+  });
+
+server.use(router);
+
+// Start Server
+await server.start();

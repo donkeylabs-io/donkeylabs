@@ -1,5 +1,5 @@
-import { createPlugin, type Register } from "../../core";
-import { createMiddleware } from "../../middleware";
+import { createPlugin, type Register } from "@donkeylabs/server";
+import { createMiddleware } from "@donkeylabs/server";
 import type { DB as AuthDatabaseSchema } from "./schema";
 
 // Plugin configuration type

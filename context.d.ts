@@ -3,8 +3,8 @@
 // Do not edit manually.
 
 /// <reference path="./registry.d.ts" />
-import type { PluginRegistry, CoreServices } from "./core";
-import type { Errors } from "./core/errors";
+import type { PluginRegistry, CoreServices } from "./src/core";
+import type { Errors } from "./src/core/errors";
 import type { Kysely } from "kysely";
 
 // Intersection of all plugin schemas - enables db.selectFrom("users"), db.selectFrom("posts"), etc.

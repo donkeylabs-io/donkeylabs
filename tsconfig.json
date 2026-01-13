@@ -14,6 +14,13 @@
     "verbatimModuleSyntax": true,
     "noEmit": true,
 
+    // Path mappings for development
+    "baseUrl": ".",
+    "paths": {
+      "@donkeylabs/server": ["./src/index.ts"],
+      "@donkeylabs/server/*": ["./src/*"]
+    },
+
     // Best practices
     "strict": true,
     "skipLibCheck": true,
@@ -25,5 +32,17 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  "include": [
+    "src/**/*",
+    "cli/**/*",
+    "test/**/*",
+    "examples/**/*",
+    "scripts/**/*",
+    "*.ts",
+    "*.d.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
 }
