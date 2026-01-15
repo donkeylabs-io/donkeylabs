@@ -1,0 +1,3 @@
+[test]
+# Exclude examples from tests - they require running server or path aliases that aren't available in library context
+root = "./test"

@@ -1,0 +1,49 @@
+{
+  "name": "@donkeylabs/mcp",
+  "version": "0.1.0",
+  "description": "MCP server for AI-assisted development with @donkeylabs/server",
+  "type": "module",
+  "main": "./src/server.ts",
+  "types": "./src/server.ts",
+  "exports": {
+    ".": {
+      "types": "./src/server.ts",
+      "import": "./src/server.ts"
+    }
+  },
+  "bin": {
+    "donkeylabs-mcp": "./src/server.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "bun run src/server.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "bun-types": "latest",
+    "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "@donkeylabs/server": "workspace:*"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai",
+    "donkeylabs",
+    "plugin",
+    "code-generation"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/donkeylabs/server",
+    "directory": "packages/mcp"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,7 @@
+node_modules/
+.svelte-kit/
+build/
+.@donkeylabs/
+*.db
+.env
+.DS_Store

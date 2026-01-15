@@ -1,0 +1,79 @@
+{
+  "name": "@donkeylabs/server",
+  "version": "0.3.1",
+  "type": "module",
+  "description": "Type-safe plugin system for building RPC-style APIs with Bun",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./client": {
+      "types": "./src/client/base.ts",
+      "import": "./src/client/base.ts"
+    },
+    "./harness": {
+      "types": "./src/harness.ts",
+      "import": "./src/harness.ts"
+    },
+    "./generator": {
+      "types": "./src/generator/index.ts",
+      "import": "./src/generator/index.ts"
+    },
+    "./context": {
+      "types": "./context.d.ts"
+    },
+    "./docs/*": "./docs/*"
+  },
+  "files": [
+    "src",
+    "docs",
+    "context.d.ts",
+    "registry.d.ts",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "gen:registry": "bun scripts/generate-registry.ts",
+    "gen:server": "bun scripts/generate-server.ts",
+    "gen:client": "bun scripts/generate-client.ts",
+    "test": "bun test",
+    "typecheck": "bun --bun tsc --noEmit",
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "gen:types": "donkeylabs generate"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/prompts": "^2.4.9",
+    "kysely": "^0.27.6",
+    "kysely-bun-sqlite": "^0.3.2",
+    "kysely-codegen": "^0.19.0",
+    "zod": "^3.24.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5",
+    "kysely": "^0.27.0 || ^0.28.0",
+    "zod": "^3.20.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.2",
+    "picocolors": "^1.1.1",
+    "prompts": "^2.4.2"
+  },
+  "keywords": [
+    "api",
+    "rpc",
+    "plugin",
+    "bun",
+    "typescript",
+    "type-safe"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/donkeylabs/server"
+  },
+  "license": "MIT"
+}
