@@ -1,173 +1,46 @@
 // Server entry for @donkeylabs/adapter-sveltekit
-import { AppServer, createPlugin, createRouter } from "@donkeylabs/server";
+import { AppServer, createRouter } from "@donkeylabs/server";
 import { Kysely } from "kysely";
 import { BunSqliteDialect } from "kysely-bun-sqlite";
 import { Database } from "bun:sqlite";
 import { z } from "zod";
+import { demoPlugin } from "./plugins/demo";
 
 // Simple in-memory database
 const db = new Kysely<{}>({
   dialect: new BunSqliteDialect({ database: new Database(":memory:") }),
 });
 
-// Random event messages for SSE demo
-const eventMessages = [
-  "User logged in",
-  "New order placed",
-  "Payment received",
-  "Item shipped",
-  "Review submitted",
-  "Comment added",
-  "File uploaded",
-  "Task completed",
-  "Alert triggered",
-  "Sync finished",
-];
-
-// Demo plugin with all core service integrations
-const demoPlugin = createPlugin.define({
-  name: "demo",
-  service: async (ctx) => {
-    let counter = 0;
-
-    return {
-      // Counter
-      getCounter: () => counter,
-      increment: () => ++counter,
-      decrement: () => --counter,
-      reset: () => { counter = 0; return counter; },
-
-      // Cache helpers
-      cacheSet: async (key: string, value: any, ttl?: number) => {
-        await ctx.core.cache.set(key, value, ttl);
-        return { success: true };
-      },
-      cacheGet: async (key: string) => {
-        const value = await ctx.core.cache.get(key);
-        const exists = await ctx.core.cache.has(key);
-        return { value, exists };
-      },
-      cacheDelete: async (key: string) => {
-        await ctx.core.cache.delete(key);
-        return { success: true };
-      },
-      cacheKeys: async () => {
-        const keys = await ctx.core.cache.keys();
-        return { keys, size: keys.length };
-      },
-
-      // Jobs helpers
-      enqueueJob: async (name: string, data: any, delay?: number) => {
-        let jobId: string;
-        if (delay && delay > 0) {
-          const runAt = new Date(Date.now() + delay);
-          jobId = await ctx.core.jobs.schedule(name, data, runAt);
-        } else {
-          jobId = await ctx.core.jobs.enqueue(name, data);
-        }
-        return { jobId };
-      },
-      getJobStats: async () => {
-        const pending = await ctx.core.jobs.getByName("demo-job", "pending");
-        const running = await ctx.core.jobs.getByName("demo-job", "running");
-        const completed = await ctx.core.jobs.getByName("demo-job", "completed");
-        return {
-          pending: pending.length,
-          running: running.length,
-          completed: completed.length,
-        };
-      },
-
-      // Cron helpers
-      getCronTasks: () => ctx.core.cron.list().map(t => ({
-        id: t.id,
-        name: t.name,
-        expression: t.expression,
-        enabled: t.enabled,
-        lastRun: t.lastRun?.toISOString(),
-        nextRun: t.nextRun?.toISOString(),
-      })),
-
-      // Rate limiter helpers
-      checkRateLimit: async (key: string, limit: number, window: number) => {
-        return ctx.core.rateLimiter.check(key, limit, window);
-      },
-      resetRateLimit: async (key: string) => {
-        await ctx.core.rateLimiter.reset(key);
-        return { success: true };
-      },
-
-      // Events helpers (internal pub/sub)
-      emitEvent: async (event: string, data: any) => {
-        await ctx.core.events.emit(event, data);
-        return { success: true };
-      },
-
-      // SSE broadcast
-      broadcast: (channel: string, event: string, data: any) => {
-        ctx.core.sse.broadcast(channel, event, data);
-        return { success: true };
-      },
-      getSSEClients: () => ({
-        total: ctx.core.sse.getClients().length,
-        byChannel: ctx.core.sse.getClientsByChannel("events").length,
-      }),
-    };
-  },
-  init: async (ctx) => {
-    // Register job handler for demo
-    ctx.core.jobs.register("demo-job", async (data) => {
-      ctx.core.logger.info("Demo job executed", { data });
-      // Broadcast job completion via SSE
-      ctx.core.sse.broadcast("events", "job-completed", {
-        id: Date.now(),
-        message: `Job completed: ${data.message || "No message"}`,
-        timestamp: new Date().toISOString(),
-      });
-    });
-
-    // Schedule cron job to broadcast SSE events every 5 seconds
-    ctx.core.cron.schedule("*/5 * * * * *", () => {
-      const message = eventMessages[Math.floor(Math.random() * eventMessages.length)];
-      ctx.core.sse.broadcast("events", "cron-event", {
-        id: Date.now(),
-        message,
-        timestamp: new Date().toISOString(),
-        source: "cron",
-      });
-    }, { name: "sse-broadcaster" });
-
-    // Listen for internal events and broadcast to SSE
-    ctx.core.events.on("demo.*", (data) => {
-      ctx.core.sse.broadcast("events", "internal-event", {
-        id: Date.now(),
-        message: `Internal event: ${JSON.stringify(data)}`,
-        timestamp: new Date().toISOString(),
-        source: "events",
-      });
-    });
-
-    ctx.core.logger.info("Demo plugin initialized with all core services");
-  },
+// Create server
+export const server = new AppServer({
+  db,
+  port: 0, // Port managed by adapter
 });
+
+server.registerPlugin(demoPlugin);
+
 
 // Create routes
 const api = createRouter("api");
 
 // Counter routes
 api.route("counter.get").typed({
+  output: z.object({ count: z.number() }),
   handle: async (_input, ctx) => ({ count: ctx.plugins.demo.getCounter() }),
 });
 
 api.route("counter.increment").typed({
+  output: z.object({ count: z.number() }),
   handle: async (_input, ctx) => ({ count: ctx.plugins.demo.increment() }),
 });
 
 api.route("counter.decrement").typed({
+  output: z.object({ count: z.number() }),
   handle: async (_input, ctx) => ({ count: ctx.plugins.demo.decrement() }),
 });
 
 api.route("counter.reset").typed({
+  output: z.object({ count: z.number() }),
   handle: async (_input, ctx) => ({ count: ctx.plugins.demo.reset() }),
 });
 
@@ -178,20 +51,24 @@ api.route("cache.set").typed({
     value: z.any(),
     ttl: z.number().optional()
   }),
+  output: z.object({ success: z.boolean() }),
   handle: async (input, ctx) => ctx.plugins.demo.cacheSet(input.key, input.value, input.ttl),
 });
 
 api.route("cache.get").typed({
   input: z.object({ key: z.string() }),
+  output: z.object({ value: z.any().optional(), exists: z.boolean() }),
   handle: async (input, ctx) => ctx.plugins.demo.cacheGet(input.key),
 });
 
 api.route("cache.delete").typed({
   input: z.object({ key: z.string() }),
+  output: z.object({ success: z.boolean() }),
   handle: async (input, ctx) => ctx.plugins.demo.cacheDelete(input.key),
 });
 
 api.route("cache.keys").typed({
+  output: z.object({ keys: z.array(z.string()) }),
   handle: async (_input, ctx) => ctx.plugins.demo.cacheKeys(),
 });
 
@@ -202,15 +79,25 @@ api.route("jobs.enqueue").typed({
     data: z.any().default({}),
     delay: z.number().optional()
   }),
-  handle: async (input, ctx) => ctx.plugins.demo.enqueueJob(input.name, input.data, input.delay),
+  output: z.object({ jobId: z.string() }),
+  handle: async (input, ctx) => ctx.plugins.demo.enqueueJob(input.name!, input.data, input.delay),
 });
 
 api.route("jobs.stats").typed({
+  output: z.object({ pending: z.number(), running: z.number(), completed: z.number() }),
   handle: async (_input, ctx) => ctx.plugins.demo.getJobStats(),
 });
 
 // Cron routes
 api.route("cron.list").typed({
+  output: z.object({ tasks: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    expression: z.string(),
+    enabled: z.boolean(),
+    lastRun: z.string().optional(),
+    nextRun: z.string().optional()
+  })) }),
   handle: async (_input, ctx) => ({ tasks: ctx.plugins.demo.getCronTasks() }),
 });
 
@@ -221,12 +108,14 @@ api.route("ratelimit.check").typed({
     limit: z.number().default(5),
     window: z.number().default(60000)
   }),
-  handle: async (input, ctx) => ctx.plugins.demo.checkRateLimit(input.key, input.limit, input.window),
+  output: z.object({ allowed: z.boolean(), remaining: z.number(), resetAt: z.date() }),
+  handle: async (input, ctx) => ctx.plugins.demo.checkRateLimit(input.key!, input.limit!, input.window!),
 });
 
 api.route("ratelimit.reset").typed({
   input: z.object({ key: z.string().default("demo") }),
-  handle: async (input, ctx) => ctx.plugins.demo.resetRateLimit(input.key),
+  output: z.object({ success: z.boolean() }),
+  handle: async (input, ctx) => ctx.plugins.demo.resetRateLimit(input.key!),
 });
 
 // Events routes (internal pub/sub)
@@ -235,29 +124,37 @@ api.route("events.emit").typed({
     event: z.string().default("demo.test"),
     data: z.any().default({ test: true })
   }),
-  handle: async (input, ctx) => ctx.plugins.demo.emitEvent(input.event, input.data),
+  output: z.object({ success: z.boolean() }),
+  handle: async (input, ctx) => ctx.plugins.demo.emitEvent(input.event!, input.data),
 });
 
 // SSE routes
-api.route("sse.broadcast").typed({
+api.route("sseRoutes.broadcast").typed({
   input: z.object({
     channel: z.string().default("events"),
     event: z.string().default("manual"),
     data: z.any()
   }),
-  handle: async (input, ctx) => ctx.plugins.demo.broadcast(input.channel, input.event, input.data),
+  output: z.object({ success: z.boolean(), recipients: z.number() }),
+  handle: async (input, ctx) => ctx.plugins.demo.broadcast(input.channel!, input.event!, input.data),
 });
 
-api.route("sse.clients").typed({
+api.route("sseRoutes.clients").typed({
+  output: z.object({ total: z.number(), byChannel: z.number() }),
   handle: async (_input, ctx) => ctx.plugins.demo.getSSEClients(),
 });
 
-// Create server
-export const server = new AppServer({
-  db,
-  port: 0, // Port managed by adapter
-});
 
 // Register plugin and routes
-server.registerPlugin(demoPlugin);
 server.use(api);
+
+// Handle DONKEYLABS_GENERATE for type generation
+if (process.env.DONKEYLABS_GENERATE === "1") {
+  // Extract routes and output as JSON for CLI
+  const routes = api.getRoutes().map((r) => ({
+    name: r.name,
+    handler: r.handler || "typed",
+  }));
+  console.log(JSON.stringify({ routes }));
+  process.exit(0);
+}
