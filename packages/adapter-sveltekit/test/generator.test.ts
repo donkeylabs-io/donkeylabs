@@ -242,6 +242,196 @@ describe("Client Generator", () => {
     });
   });
 
+  describe("stream routes", () => {
+    it("should generate stream routes with typed input and Response output", async () => {
+      await cleanup();
+
+      const routes: RouteInfo[] = [
+        {
+          name: "api.files.download",
+          prefix: "api.files",
+          routeName: "download",
+          handler: "stream",
+          inputSource: "z.object({ fileId: z.string() })",
+        },
+      ];
+
+      await generateClient({}, routes, TEST_OUTPUT_PATH);
+
+      const content = await readFile(TEST_OUTPUT_PATH, "utf-8");
+
+      // Should generate type with only Input (no Output for stream)
+      expect(content).toContain("export namespace Download");
+      expect(content).toContain("export type Input");
+      // Stream routes don't have Output type
+      expect(content).not.toMatch(/namespace Download[\s\S]*?Output.*download/i);
+
+      // Should generate method object with fetch, url, get methods
+      expect(content).toContain("download: {");
+      expect(content).toContain("fetch: (input: Routes.Files.Download.Input): Promise<Response> => this.streamRequest(");
+      expect(content).toContain("url: (input: Routes.Files.Download.Input): string => this.streamUrl(");
+      expect(content).toContain("get: (input: Routes.Files.Download.Input): Promise<Response> => this.streamGet(");
+
+      await cleanup();
+    });
+
+    it("should handle mixed typed, raw, and stream routes", async () => {
+      await cleanup();
+
+      const routes: RouteInfo[] = [
+        {
+          name: "api.media.list",
+          prefix: "api.media",
+          routeName: "list",
+          handler: "typed",
+          inputSource: "z.object({})",
+          outputSource: "z.array(z.string())",
+        },
+        {
+          name: "api.media.stream",
+          prefix: "api.media",
+          routeName: "stream",
+          handler: "stream",
+          inputSource: "z.object({ id: z.string(), quality: z.number() })",
+        },
+        {
+          name: "api.media.raw",
+          prefix: "api.media",
+          routeName: "raw",
+          handler: "raw",
+        },
+      ];
+
+      await generateClient({}, routes, TEST_OUTPUT_PATH);
+
+      const content = await readFile(TEST_OUTPUT_PATH, "utf-8");
+
+      // Typed route uses request()
+      expect(content).toContain('list: (input:');
+      expect(content).toContain('this.request("api.media.list"');
+
+      // Stream route generates object with fetch, url, get methods
+      expect(content).toContain("stream: {");
+      expect(content).toContain("fetch: (input: Routes.Media.Stream.Input): Promise<Response> => this.streamRequest(");
+      expect(content).toContain('this.streamRequest("api.media.stream"');
+
+      // Raw route uses rawRequest()
+      expect(content).toContain('raw: (init?: RequestInit): Promise<Response>');
+      expect(content).toContain('this.rawRequest("api.media.raw"');
+
+      await cleanup();
+    });
+
+    it("should generate types for both typed and stream routes", async () => {
+      await cleanup();
+
+      const routes: RouteInfo[] = [
+        {
+          name: "api.data.get",
+          prefix: "api.data",
+          routeName: "get",
+          handler: "typed",
+          inputSource: "z.object({ id: z.string() })",
+          outputSource: "z.object({ value: z.number() })",
+        },
+        {
+          name: "api.data.export",
+          prefix: "api.data",
+          routeName: "export",
+          handler: "stream",
+          inputSource: "z.object({ format: z.enum(['csv', 'json', 'xlsx']) })",
+        },
+      ];
+
+      await generateClient({}, routes, TEST_OUTPUT_PATH);
+
+      const content = await readFile(TEST_OUTPUT_PATH, "utf-8");
+
+      // Both should have types generated
+      expect(content).toContain("export namespace Get");
+      expect(content).toContain("export namespace Export");
+
+      // Typed route has Input and Output
+      expect(content).toMatch(/namespace Get[\s\S]*?Input[\s\S]*?Output/);
+
+      // Stream route has only Input
+      expect(content).toContain("Routes.Data.Export.Input");
+
+      await cleanup();
+    });
+  });
+
+  describe("SSE routes", () => {
+    it("should generate SSE routes with typed events", async () => {
+      await cleanup();
+
+      const routes: RouteInfo[] = [
+        {
+          name: "api.notifications.subscribe",
+          prefix: "api.notifications",
+          routeName: "subscribe",
+          handler: "sse",
+          inputSource: "{ userId: string }",
+          eventsSource: {
+            notification: "{ message: string; id: string }",
+            announcement: "{ title: string; urgent: boolean }",
+          },
+        },
+      ];
+
+      await generateClient({}, routes, TEST_OUTPUT_PATH);
+
+      const content = await readFile(TEST_OUTPUT_PATH, "utf-8");
+
+      // Should generate type with Input and Events
+      expect(content).toContain("export namespace Subscribe");
+      expect(content).toContain("export type Input");
+      expect(content).toContain("export type Events");
+
+      // Should include event types in Events
+      expect(content).toContain('"notification"');
+      expect(content).toContain('"announcement"');
+      expect(content).toContain("message: string");
+      expect(content).toContain("urgent: boolean");
+
+      // Should generate method using sseConnect with SSEConnection return type
+      expect(content).toContain("subscribe: (input: Routes.Notifications.Subscribe.Input): SSEConnection<Routes.Notifications.Subscribe.Events>");
+      expect(content).toContain('this.sseConnect("api.notifications.subscribe"');
+
+      // Should import SSEConnection
+      expect(content).toContain("SSEConnection");
+
+      await cleanup();
+    });
+
+    it("should handle SSE routes without events (generic events)", async () => {
+      await cleanup();
+
+      const routes: RouteInfo[] = [
+        {
+          name: "api.stream.subscribe",
+          prefix: "api.stream",
+          routeName: "subscribe",
+          handler: "sse",
+          inputSource: "{ channel: string }",
+          // No eventsSource - should default to Record<string, unknown>
+        },
+      ];
+
+      await generateClient({}, routes, TEST_OUTPUT_PATH);
+
+      const content = await readFile(TEST_OUTPUT_PATH, "utf-8");
+
+      // Should generate Events type as Record<string, unknown>
+      expect(content).toContain("export type Events = Record<string, unknown>");
+
+      // Should still return SSEConnection with the Events type
+      expect(content).toContain("SSEConnection<Routes.Stream.Subscribe.Events>");
+
+      await cleanup();
+    });
+  });
+
   describe("edge cases", () => {
     it("should handle empty routes array", async () => {
       await cleanup();

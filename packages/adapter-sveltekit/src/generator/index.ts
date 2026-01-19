@@ -33,7 +33,7 @@ function isRouteInfo(route: RouteInfo | ExtractedRoute): route is RouteInfo {
 /** SvelteKit-specific generator options */
 export const svelteKitGeneratorOptions: ClientGeneratorOptions = {
   baseImport:
-    'import { UnifiedApiClientBase, type ClientOptions } from "@donkeylabs/adapter-sveltekit/client";',
+    'import { UnifiedApiClientBase, SSEConnection, type ClientOptions } from "@donkeylabs/adapter-sveltekit/client";',
   baseClass: "UnifiedApiClientBase",
   constructorSignature: "options?: ClientOptions",
   constructorBody: "super(options);",
@@ -114,9 +114,9 @@ function generateTypedSvelteKitClient(routes: RouteInfo[]): string {
     const pascalNs = namespace === "_root" ? "Root" : toPascalCase(namespace);
     const methodNs = namespace === "_root" ? "_root" : namespace;
 
-    // Generate types for this namespace
+    // Generate types for this namespace (typed, stream, sse, formData, html routes have input types)
     const typeEntries = nsRoutes
-      .filter(r => r.handler === "typed")
+      .filter(r => ["typed", "stream", "sse", "formData", "html"].includes(r.handler))
       .map(r => {
         const pascalRoute = toPascalCase(r.routeName);
         // If inputSource starts with "z.", it's a Zod source string - convert it
@@ -124,6 +124,36 @@ function generateTypedSvelteKitClient(routes: RouteInfo[]): string {
         const inputType = r.inputSource
           ? (r.inputSource.trim().startsWith("z.") ? zodToTypeScript(r.inputSource) : r.inputSource)
           : "Record<string, never>";
+
+        // Handlers that don't have typed output (return Response or string directly)
+        if (r.handler === "stream" || r.handler === "html") {
+          return `    export namespace ${pascalRoute} {
+      export type Input = Expand<${inputType}>;
+    }
+    export type ${pascalRoute} = { Input: ${pascalRoute}.Input };`;
+        }
+
+        // SSE routes - include Events type if eventsSource is present
+        if (r.handler === "sse") {
+          const eventsEntries = r.eventsSource
+            ? Object.entries(r.eventsSource).map(([eventName, eventSchema]) => {
+                const eventType = eventSchema.trim().startsWith("z.")
+                  ? zodToTypeScript(eventSchema)
+                  : eventSchema;
+                return `        "${eventName}": Expand<${eventType}>;`;
+              })
+            : [];
+          const eventsType = eventsEntries.length > 0
+            ? `{\n${eventsEntries.join("\n")}\n      }`
+            : "Record<string, unknown>";
+          return `    export namespace ${pascalRoute} {
+      export type Input = Expand<${inputType}>;
+      export type Events = ${eventsType};
+    }
+    export type ${pascalRoute} = { Input: ${pascalRoute}.Input; Events: ${pascalRoute}.Events };`;
+        }
+
+        // typed and formData have both Input and Output
         const outputType = r.outputSource
           ? (r.outputSource.trim().startsWith("z.") ? zodToTypeScript(r.outputSource) : r.outputSource)
           : "unknown";
@@ -159,7 +189,63 @@ function generateTypedSvelteKitClient(routes: RouteInfo[]): string {
         return `    ${methodName}: (init?: RequestInit): Promise<Response> => this.rawRequest("${fullRouteName}", init)`;
       });
 
-    const allMethods = [...methodEntries, ...rawMethodEntries];
+    const streamMethodEntries = nsRoutes
+      .filter(r => r.handler === "stream")
+      .map(r => {
+        const methodName = toCamelCase(r.routeName);
+        const pascalRoute = toPascalCase(r.routeName);
+        const inputType = `Routes.${pascalNs}.${pascalRoute}.Input`;
+        const fullRouteName = commonPrefix ? `${commonPrefix}.${r.name}` : r.name;
+        // Stream routes provide three methods:
+        // - fetch(input): POST request (programmatic)
+        // - url(input): GET URL for browser (video src, img src, download links)
+        // - get(input): GET fetch request
+        return `    ${methodName}: {
+      /** POST request with JSON body (programmatic) */
+      fetch: (input: ${inputType}): Promise<Response> => this.streamRequest("${fullRouteName}", input),
+      /** GET URL for browser src attributes (video, img, download links) */
+      url: (input: ${inputType}): string => this.streamUrl("${fullRouteName}", input),
+      /** GET request with query params */
+      get: (input: ${inputType}): Promise<Response> => this.streamGet("${fullRouteName}", input),
+    }`;
+      });
+
+    const sseMethodEntries = nsRoutes
+      .filter(r => r.handler === "sse")
+      .map(r => {
+        const methodName = toCamelCase(r.routeName);
+        const pascalRoute = toPascalCase(r.routeName);
+        const hasInput = r.inputSource;
+        const inputType = hasInput ? `Routes.${pascalNs}.${pascalRoute}.Input` : "Record<string, never>";
+        const eventsType = `Routes.${pascalNs}.${pascalRoute}.Events`;
+        const fullRouteName = commonPrefix ? `${commonPrefix}.${r.name}` : r.name;
+        // SSE returns typed SSEConnection for type-safe event handling
+        return `    ${methodName}: (${hasInput ? `input: ${inputType}` : ""}): SSEConnection<${eventsType}> => this.sseConnect("${fullRouteName}"${hasInput ? ", input" : ""})`;
+      });
+
+    const formDataMethodEntries = nsRoutes
+      .filter(r => r.handler === "formData")
+      .map(r => {
+        const methodName = toCamelCase(r.routeName);
+        const pascalRoute = toPascalCase(r.routeName);
+        const inputType = r.inputSource ? `Routes.${pascalNs}.${pascalRoute}.Input` : "Record<string, any>";
+        const outputType = r.outputSource ? `Routes.${pascalNs}.${pascalRoute}.Output` : "unknown";
+        const fullRouteName = commonPrefix ? `${commonPrefix}.${r.name}` : r.name;
+        return `    ${methodName}: (fields: ${inputType}, files: File[]): Promise<${outputType}> => this.formDataRequest("${fullRouteName}", fields, files)`;
+      });
+
+    const htmlMethodEntries = nsRoutes
+      .filter(r => r.handler === "html")
+      .map(r => {
+        const methodName = toCamelCase(r.routeName);
+        const pascalRoute = toPascalCase(r.routeName);
+        const hasInput = r.inputSource;
+        const inputType = hasInput ? `Routes.${pascalNs}.${pascalRoute}.Input` : "Record<string, never>";
+        const fullRouteName = commonPrefix ? `${commonPrefix}.${r.name}` : r.name;
+        return `    ${methodName}: (${hasInput ? `input: ${inputType}` : ""}): Promise<string> => this.htmlRequest("${fullRouteName}"${hasInput ? ", input" : ""})`;
+      });
+
+    const allMethods = [...methodEntries, ...rawMethodEntries, ...streamMethodEntries, ...sseMethodEntries, ...formDataMethodEntries, ...htmlMethodEntries];
     if (allMethods.length > 0) {
       if (namespace === "_root") {
         // Root-level methods go directly on the class

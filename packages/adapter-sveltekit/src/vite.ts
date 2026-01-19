@@ -112,13 +112,14 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
           // In-process request handler
           const inProcessMiddleware = async (req: any, res: any, next: any) => {
             const url = req.url || "/";
+            const urlObj = new URL(url, "http://localhost");
+            const pathname = urlObj.pathname;
 
-            // Handle SSE
-            if (req.method === "GET" && url.startsWith("/sse")) {
+            // Handle SSE endpoint
+            if (req.method === "GET" && pathname === "/sse") {
               if (!serverReady || !appServer) return next();
 
-              const fullUrl = new URL(url, "http://localhost");
-              const channels = fullUrl.searchParams.get("channels")?.split(",").filter(Boolean) || [];
+              const channels = urlObj.searchParams.get("channels")?.split(",").filter(Boolean) || [];
               const lastEventId = req.headers["last-event-id"] || undefined;
 
               const { client, response } = appServer.getCore().sse.addClient({ lastEventId });
@@ -159,32 +160,91 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
               return; // Don't call next()
             }
 
-            // Handle API routes (POST only)
-            if (req.method === "POST" && /^\/[a-zA-Z][a-zA-Z0-9_.]*$/.test(url)) {
+            // Handle API routes (GET or POST for route names like /routeName.action)
+            if ((req.method === "GET" || req.method === "POST") && /^\/[a-zA-Z][a-zA-Z0-9_.]*$/.test(pathname)) {
               if (!serverReady || !appServer) return next();
 
-              const routeName = url.slice(1);
+              const routeName = pathname.slice(1);
               if (!appServer.hasRoute(routeName)) return next();
 
-              // Collect body
-              let body = "";
-              req.on("data", (chunk: any) => (body += chunk));
-              req.on("end", async () => {
-                try {
-                  const input = body ? JSON.parse(body) : {};
-                  const ip = req.socket?.remoteAddress || "127.0.0.1";
-
-                  const result = await appServer.callRoute(routeName, input, ip);
-
-                  res.setHeader("Content-Type", "application/json");
-                  res.setHeader("Access-Control-Allow-Origin", "*");
-                  res.end(JSON.stringify(result));
-                } catch (err: any) {
-                  res.statusCode = err.status || 500;
-                  res.setHeader("Content-Type", "application/json");
-                  res.end(JSON.stringify({ error: err.message || "Internal error" }));
+              // Build a proper Request object to pass to handleRequest
+              const buildRequest = async (): Promise<Request> => {
+                const fullUrl = `http://localhost${url}`;
+                const headers = new Headers();
+                for (const [key, value] of Object.entries(req.headers)) {
+                  if (typeof value === "string") {
+                    headers.set(key, value);
+                  } else if (Array.isArray(value)) {
+                    for (const v of value) headers.append(key, v);
+                  }
                 }
-              });
+
+                if (req.method === "POST") {
+                  // Collect body for POST
+                  const chunks: Buffer[] = [];
+                  for await (const chunk of req) {
+                    chunks.push(chunk);
+                  }
+                  const body = Buffer.concat(chunks);
+                  return new Request(fullUrl, {
+                    method: "POST",
+                    headers,
+                    body,
+                  });
+                }
+
+                return new Request(fullUrl, { method: "GET", headers });
+              };
+
+              try {
+                const request = await buildRequest();
+                const ip = req.socket?.remoteAddress || "127.0.0.1";
+
+                // Use handleRequest which properly handles all handler types (typed, raw, stream, sse, html)
+                const response = await appServer.handleRequest(
+                  request,
+                  routeName,
+                  ip,
+                  { corsHeaders: { "Access-Control-Allow-Origin": "*" } }
+                );
+
+                if (!response) {
+                  return next();
+                }
+
+                // Stream the response back
+                res.statusCode = response.status;
+                for (const [key, value] of response.headers) {
+                  res.setHeader(key, value);
+                }
+
+                // Handle body streaming
+                if (response.body) {
+                  const reader = response.body.getReader();
+                  const pump = async () => {
+                    try {
+                      while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) {
+                          res.end();
+                          break;
+                        }
+                        res.write(value);
+                      }
+                    } catch {
+                      res.end();
+                    }
+                  };
+                  await pump();
+                } else {
+                  res.end();
+                }
+              } catch (err: any) {
+                console.error("[donkeylabs-dev] Request error:", err);
+                res.statusCode = err.status || 500;
+                res.setHeader("Content-Type", "application/json");
+                res.end(JSON.stringify({ error: err.message || "Internal error" }));
+              }
 
               return; // Don't call next()
             }
@@ -286,10 +346,13 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
             }, 10000);
           });
 
-          // Proxy middleware
+          // Proxy middleware - handles GET and POST for API routes
           const proxyMiddleware = (req: any, res: any, next: any) => {
             const url = req.url || "/";
-            const isApiRoute = req.method === "POST" && /^\/[a-zA-Z][a-zA-Z0-9_.]*$/.test(url);
+            const urlObj = new URL(url, "http://localhost");
+            const pathname = urlObj.pathname;
+            // API routes are GET or POST to paths like /routeName.action
+            const isApiRoute = (req.method === "GET" || req.method === "POST") && /^\/[a-zA-Z][a-zA-Z0-9_.]*$/.test(pathname);
 
             if (!isApiRoute) return next();
 
@@ -298,7 +361,7 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
                 {
                   hostname: "localhost",
                   port: backendPort,
-                  path: url,
+                  path: url, // Include query string
                   method: req.method,
                   headers: { ...req.headers, host: `localhost:${backendPort}` },
                 },
@@ -308,6 +371,7 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
                   for (const [k, v] of Object.entries(proxyRes.headers)) {
                     if (v) res.setHeader(k, v);
                   }
+                  // Stream response back (works for binary/streaming responses)
                   proxyRes.pipe(res);
                 }
               );
@@ -318,7 +382,12 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
                 res.end(JSON.stringify({ error: "Backend unavailable" }));
               });
 
-              req.pipe(proxyReq);
+              // For POST, pipe the body; for GET, just end
+              if (req.method === "POST") {
+                req.pipe(proxyReq);
+              } else {
+                proxyReq.end();
+              }
             });
           };
 

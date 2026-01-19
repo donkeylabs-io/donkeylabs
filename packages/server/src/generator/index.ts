@@ -17,6 +17,8 @@ export interface RouteInfo {
   handler: "typed" | "raw" | string;
   inputSource?: string;
   outputSource?: string;
+  /** SSE event schemas (for sse handler) */
+  eventsSource?: Record<string, string>;
 }
 
 export interface EventInfo {

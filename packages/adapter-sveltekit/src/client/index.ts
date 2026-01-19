@@ -25,6 +25,116 @@ export interface SSESubscription {
 }
 
 /**
+ * Type-safe SSE connection wrapper.
+ * Provides typed event handlers with automatic JSON parsing.
+ *
+ * @example
+ * ```ts
+ * const connection = api.notifications.subscribe({ userId: "123" });
+ *
+ * // Typed event handler - returns unsubscribe function
+ * const unsubscribe = connection.on("notification", (data) => {
+ *   console.log(data.message); // Fully typed!
+ * });
+ *
+ * // Later: unsubscribe from this specific handler
+ * unsubscribe();
+ *
+ * // Close entire connection
+ * connection.close();
+ * ```
+ */
+export class SSEConnection<TEvents extends Record<string, any> = Record<string, any>> {
+  private eventSource: EventSource;
+  private handlers = new Map<string, Set<(data: any) => void>>();
+
+  constructor(url: string) {
+    this.eventSource = new EventSource(url);
+  }
+
+  /**
+   * Register a typed event handler.
+   * @returns Unsubscribe function to remove this specific handler
+   */
+  on<K extends keyof TEvents>(
+    event: K & string,
+    handler: (data: TEvents[K]) => void
+  ): () => void {
+    if (!this.handlers.has(event)) {
+      this.handlers.set(event, new Set());
+
+      // Add EventSource listener for this event type
+      this.eventSource.addEventListener(event, (e: MessageEvent) => {
+        const handlers = this.handlers.get(event);
+        if (handlers) {
+          let data: any;
+          try {
+            data = JSON.parse(e.data);
+          } catch {
+            data = e.data;
+          }
+          for (const h of handlers) {
+            h(data);
+          }
+        }
+      });
+    }
+
+    this.handlers.get(event)!.add(handler);
+
+    // Return unsubscribe function
+    return () => {
+      const handlers = this.handlers.get(event);
+      if (handlers) {
+        handlers.delete(handler);
+      }
+    };
+  }
+
+  /**
+   * Register error handler
+   */
+  onError(handler: (event: Event) => void): () => void {
+    this.eventSource.onerror = handler;
+    return () => {
+      this.eventSource.onerror = null;
+    };
+  }
+
+  /**
+   * Register open handler (connection established)
+   */
+  onOpen(handler: (event: Event) => void): () => void {
+    this.eventSource.onopen = handler;
+    return () => {
+      this.eventSource.onopen = null;
+    };
+  }
+
+  /**
+   * Get connection state
+   */
+  get readyState(): number {
+    return this.eventSource.readyState;
+  }
+
+  /**
+   * Check if connected
+   */
+  get connected(): boolean {
+    return this.eventSource.readyState === EventSource.OPEN;
+  }
+
+  /**
+   * Close the SSE connection
+   */
+  close(): void {
+    this.eventSource.close();
+    this.handlers.clear();
+  }
+}
+
+/**
  * Base class for unified API clients.
  * Extend this class with your generated route methods.
  */
@@ -102,6 +212,176 @@ export class UnifiedApiClientBase {
       method: "POST",
       ...init,
     });
+  }
+
+  /**
+   * Make a stream request (validated input, Response output).
+   * For streaming, binary data, or custom content-type responses.
+   *
+   * By default uses POST with JSON body. For browser compatibility
+   * (video src, image src, download links), use streamUrl() instead.
+   */
+  protected async streamRequest<TInput>(
+    route: string,
+    input: TInput,
+    options?: RequestOptions
+  ): Promise<Response> {
+    const url = `${this.baseUrl}/${route}`;
+    const fetchFn = this.customFetch ?? fetch;
+
+    const response = await fetchFn(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+      },
+      body: JSON.stringify(input),
+      signal: options?.signal,
+    });
+
+    // Unlike typed requests, we return the raw Response
+    // Error handling is left to the caller
+    return response;
+  }
+
+  /**
+   * Get the URL for a stream endpoint (for browser src attributes).
+   * Returns a URL with query params that can be used in:
+   * - <video src={url}>
+   * - <img src={url}>
+   * - <a href={url} download>
+   * - window.open(url)
+   */
+  protected streamUrl<TInput>(route: string, input?: TInput): string {
+    let url = `${this.baseUrl}/${route}`;
+
+    if (input && typeof input === "object") {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(input)) {
+        params.set(key, typeof value === "string" ? value : JSON.stringify(value));
+      }
+      url += `?${params.toString()}`;
+    }
+
+    return url;
+  }
+
+  /**
+   * Fetch a stream via GET with query params.
+   * Alternative to streamRequest() for cases where GET is preferred.
+   */
+  protected async streamGet<TInput>(
+    route: string,
+    input?: TInput,
+    options?: RequestOptions
+  ): Promise<Response> {
+    const url = this.streamUrl(route, input);
+    const fetchFn = this.customFetch ?? fetch;
+
+    return fetchFn(url, {
+      method: "GET",
+      headers: options?.headers,
+      signal: options?.signal,
+    });
+  }
+
+  /**
+   * Connect to an SSE endpoint.
+   * Returns a typed SSEConnection for handling server-sent events.
+   */
+  protected sseConnect<TInput, TEvents extends Record<string, any> = Record<string, any>>(
+    route: string,
+    input?: TInput
+  ): SSEConnection<TEvents> {
+    let url = `${this.baseUrl}/${route}`;
+
+    // Add input as query params for GET request
+    if (input && typeof input === "object") {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(input)) {
+        params.set(key, typeof value === "string" ? value : JSON.stringify(value));
+      }
+      url += `?${params.toString()}`;
+    }
+
+    return new SSEConnection<TEvents>(url);
+  }
+
+  /**
+   * Make a formData request (file uploads with validated fields).
+   */
+  protected async formDataRequest<TFields, TOutput>(
+    route: string,
+    fields: TFields,
+    files: File[],
+    options?: RequestOptions
+  ): Promise<TOutput> {
+    const url = `${this.baseUrl}/${route}`;
+    const fetchFn = this.customFetch ?? fetch;
+
+    const formData = new FormData();
+
+    // Add fields
+    if (fields && typeof fields === "object") {
+      for (const [key, value] of Object.entries(fields)) {
+        formData.append(key, typeof value === "string" ? value : JSON.stringify(value));
+      }
+    }
+
+    // Add files
+    for (const file of files) {
+      formData.append("file", file);
+    }
+
+    const response = await fetchFn(url, {
+      method: "POST",
+      headers: options?.headers,
+      body: formData,
+      signal: options?.signal,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: "Unknown error" }));
+      throw new Error(error.message || error.error || `HTTP ${response.status}`);
+    }
+
+    return response.json();
+  }
+
+  /**
+   * Make an HTML request (returns HTML string).
+   */
+  protected async htmlRequest<TInput>(
+    route: string,
+    input?: TInput,
+    options?: RequestOptions
+  ): Promise<string> {
+    let url = `${this.baseUrl}/${route}`;
+    const fetchFn = this.customFetch ?? fetch;
+
+    // Add input as query params for GET request
+    if (input && typeof input === "object") {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(input)) {
+        params.set(key, typeof value === "string" ? value : JSON.stringify(value));
+      }
+      url += `?${params.toString()}`;
+    }
+
+    const response = await fetchFn(url, {
+      method: "GET",
+      headers: {
+        Accept: "text/html",
+        ...options?.headers,
+      },
+      signal: options?.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    return response.text();
   }
 
   /**

@@ -23,6 +23,15 @@ export const MyHandler = createHandler<MyFn>(async (req, def, handle, ctx) => {
 
 ## Built-in Handlers
 
+| Handler | Input | Output | HTTP Methods | Use Case |
+|---------|-------|--------|--------------|----------|
+| `typed` | Zod-validated JSON | Zod-validated JSON | POST | Standard API endpoints |
+| `raw` | Full Request | Full Response | Any | Proxies, WebSockets, custom protocols |
+| `stream` | Zod-validated (query/JSON) | Response (binary/stream) | GET, POST | File downloads, video/image serving |
+| `sse` | Zod-validated (query/JSON) | SSE connection | GET, POST | Real-time notifications |
+| `formData` | Zod-validated fields + files | Zod-validated JSON | POST | File uploads |
+| `html` | Zod-validated (query/JSON) | HTML string | GET, POST | htmx, server components |
+
 ### TypedHandler (Default)
 
 JSON-RPC style handler with automatic validation:
@@ -59,29 +68,347 @@ router.route("greet").typed({
 Full control over Request and Response:
 
 ```ts
-router.route("upload").raw({
+router.route("proxy").raw({
   handle: async (req, ctx) => {
-    if (req.method !== "POST") {
-      return new Response("Method Not Allowed", { status: 405 });
-    }
-
-    const formData = await req.formData();
-    const file = formData.get("file") as File;
-
-    // Process file...
-
-    return Response.json({ success: true });
+    // Full access to request
+    const response = await fetch("https://api.example.com" + new URL(req.url).pathname, {
+      method: req.method,
+      headers: req.headers,
+      body: req.body,
+    });
+    return response;
   },
 });
 ```
 
 **Use cases:**
-- File uploads/downloads
-- Streaming responses
-- Server-Sent Events
-- Custom content types
+- Proxying requests
 - WebSocket upgrades
-- Non-JSON APIs
+- Custom protocols
+- Non-standard HTTP methods
+
+---
+
+### StreamHandler
+
+Validated input with custom Response output. Best for binary data and streaming:
+
+```ts
+router.route("files.download").stream({
+  input: z.object({
+    fileId: z.string(),
+    format: z.enum(["mp4", "webm"])
+  }),
+  handle: async (input, ctx) => {
+    const file = await ctx.plugins.storage.getFile(input.fileId);
+
+    return new Response(file.stream, {
+      headers: {
+        "Content-Type": `video/${input.format}`,
+        "Content-Disposition": `attachment; filename="${input.fileId}.${input.format}"`,
+      },
+    });
+  },
+});
+```
+
+**Behavior:**
+- Accepts GET (query params) or POST (JSON body)
+- Parses and validates input with Zod
+- Returns Response directly (no output validation)
+
+**Use cases:**
+- File downloads with parameters
+- Video/audio streaming
+- Binary data with metadata
+- Custom content-types
+- Image serving (`<img src="...">`)
+- Video embedding (`<video src="...">`)
+
+**Generated Client:**
+
+The generated client provides three methods for stream routes:
+
+```ts
+// 1. fetch() - POST request with JSON body (programmatic use)
+const response = await api.files.download.fetch({ fileId: "abc", format: "mp4" });
+const blob = await response.blob();
+
+// 2. url() - GET URL for browser src attributes
+const url = api.files.download.url({ fileId: "abc", format: "mp4" });
+// Returns: "/api.files.download?fileId=abc&format=mp4"
+
+// 3. get() - GET request with query params
+const response = await api.files.download.get({ fileId: "abc", format: "mp4" });
+```
+
+**HTML/Svelte Usage:**
+
+```svelte
+<script>
+  import { createApi } from '$lib/api';
+  const api = createApi();
+</script>
+
+<!-- Video element with stream URL -->
+<video src={api.videos.stream.url({ id: "video-123" })} controls />
+
+<!-- Image with dynamic src -->
+<img src={api.images.thumbnail.url({ id: "img-456", size: "medium" })} />
+
+<!-- Download link -->
+<a href={api.files.download.url({ fileId: "doc-789" })} download>
+  Download File
+</a>
+```
+
+---
+
+### SSEHandler
+
+Server-Sent Events with validated input, automatic channel subscription, and **typed events**:
+
+```ts
+router.route("notifications.subscribe").sse({
+  input: z.object({
+    userId: z.string(),
+    channels: z.array(z.string()).optional(),
+  }),
+  // Define event schemas for type-safe generated clients
+  events: {
+    notification: z.object({ message: z.string(), id: z.string() }),
+    announcement: z.object({ title: z.string(), urgent: z.boolean() }),
+  },
+  handle: (input, ctx) => {
+    // Return channel names to subscribe to
+    const channels = [`user:${input.userId}`, "global"];
+    if (input.channels) {
+      channels.push(...input.channels);
+    }
+    return channels;
+  },
+});
+```
+
+**Behavior:**
+- Accepts GET (query params) or POST (JSON body)
+- Validates input with Zod schema
+- Creates SSE connection via `ctx.core.sse`
+- Subscribes client to returned channels
+- Supports `Last-Event-ID` header for reconnection
+- `events` schema enables typed event handlers in generated client
+
+**Broadcasting Events (Server-side):**
+```ts
+// In your service or handler
+ctx.core.sse.broadcast("user:123", "notification", {
+  message: "New message received",
+  id: "notif-123"
+});
+
+// Broadcast to all connected clients
+ctx.core.sse.broadcastAll("announcement", {
+  title: "Server maintenance in 5 minutes",
+  urgent: true
+});
+```
+
+**Generated Client (Typed):**
+```ts
+// Connect to SSE endpoint - returns typed SSEConnection
+const connection = api.notifications.subscribe({ userId: "123" });
+
+// Type-safe event handlers - data is fully typed, no JSON.parse needed!
+const unsubNotif = connection.on("notification", (data) => {
+  // data: { message: string; id: string }
+  console.log("Notification:", data.message);
+});
+
+const unsubAnnounce = connection.on("announcement", (data) => {
+  // data: { title: string; urgent: boolean }
+  if (data.urgent) showAlert(data.title);
+});
+
+// Unsubscribe from specific handlers
+unsubNotif();
+
+// Handle connection events
+connection.onError((e) => console.error("SSE connection error"));
+connection.onOpen(() => console.log("Connected"));
+
+// Check connection state
+connection.connected;   // boolean
+connection.readyState;  // 0=CONNECTING, 1=OPEN, 2=CLOSED
+
+// Close entire connection
+connection.close();
+```
+
+**Svelte 5 Example:**
+```svelte
+<script lang="ts">
+  import { createApi } from '$lib/api';
+  import type { SSEConnection } from '@donkeylabs/adapter-sveltekit/client';
+
+  const api = createApi();
+  let notifications = $state<{ message: string; id: string }[]>([]);
+  let connection: SSEConnection | null = null;
+
+  function connect(userId: string) {
+    connection = api.notifications.subscribe({ userId });
+
+    // Typed event handler - no JSON.parse needed!
+    connection.on("notification", (data) => {
+      notifications = [...notifications, data]; // data is already typed
+    });
+  }
+
+  function disconnect() {
+    connection?.close();
+    connection = null;
+  }
+
+  // Cleanup on unmount
+  $effect(() => {
+    return () => connection?.close();
+  });
+</script>
+```
+
+---
+
+### FormDataHandler
+
+File uploads with validated form fields and file constraints:
+
+```ts
+router.route("files.upload").formData({
+  input: z.object({
+    folder: z.string(),
+    description: z.string().optional(),
+  }),
+  output: z.object({
+    ids: z.array(z.string()),
+    count: z.number(),
+  }),
+  files: {
+    maxSize: 10 * 1024 * 1024,  // 10MB
+    accept: ["image/*", "application/pdf"],
+  },
+  handle: async ({ fields, files }, ctx) => {
+    const ids: string[] = [];
+
+    for (const file of files) {
+      const id = await ctx.plugins.storage.save(file, fields.folder);
+      ids.push(id);
+    }
+
+    return { ids, count: files.length };
+  },
+});
+```
+
+**Behavior:**
+- Accepts POST requests only
+- Requires `multipart/form-data` content type
+- Separates form fields from files
+- Validates fields with Zod schema
+- Validates output with Zod schema (if provided)
+- Enforces file constraints before calling handler
+
+**File Constraints:**
+```ts
+files: {
+  maxSize?: number;      // Max file size in bytes
+  accept?: string[];     // MIME types (supports wildcards like "image/*")
+}
+```
+
+**Error Responses:**
+
+| Status | Condition |
+|--------|-----------|
+| 405 | Non-POST request |
+| 400 | Not multipart/form-data |
+| 400 | Field validation failed |
+| 400 | File exceeds maxSize |
+| 400 | File type not in accept list |
+
+**Generated Client:**
+```ts
+const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+const files = Array.from(fileInput.files || []);
+
+const result = await api.files.upload(
+  { folder: "uploads", description: "My photos" },
+  files
+);
+console.log(`Uploaded ${result.count} files:`, result.ids);
+```
+
+---
+
+### HTMLHandler
+
+Returns HTML responses. Perfect for htmx, partial renders, and server components:
+
+```ts
+router.route("components.userCard").html({
+  input: z.object({ userId: z.string() }),
+  handle: async (input, ctx) => {
+    const user = await ctx.plugins.users.get(input.userId);
+
+    return `
+      <div class="card" id="user-${user.id}">
+        <img src="${user.avatar}" alt="${user.name}" />
+        <h3>${user.name}</h3>
+        <p>${user.bio}</p>
+      </div>
+    `;
+  },
+});
+```
+
+**Behavior:**
+- Accepts GET (query params) or POST (JSON/form-urlencoded)
+- Validates input with Zod schema
+- Returns `text/html` content type
+- Can return string (wrapped in Response) or custom Response
+- Returns HTML-formatted errors
+
+**Use Cases:**
+- htmx partials
+- Server-side rendered components
+- Email templates
+- PDF generation (return Response with different content-type)
+
+**Returning Custom Response:**
+```ts
+router.route("pages.redirect").html({
+  input: z.object({ to: z.string() }),
+  handle: (input) => {
+    return new Response(null, {
+      status: 302,
+      headers: { Location: input.to },
+    });
+  },
+});
+```
+
+**Generated Client:**
+```ts
+const html = await api.components.userCard({ userId: "123" });
+document.getElementById("container").innerHTML = html;
+```
+
+**htmx Example:**
+```html
+<div hx-get="/api/components.userCard?userId=123"
+     hx-trigger="load"
+     hx-swap="innerHTML">
+  Loading...
+</div>
+```
 
 ---
 

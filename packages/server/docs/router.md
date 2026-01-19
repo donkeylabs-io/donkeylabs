@@ -44,8 +44,12 @@ After calling `router.route("name")`, you get a RouteBuilder with handler method
 
 | Method | Description |
 |--------|-------------|
-| `.typed(config)` | JSON-RPC style handler (default) |
+| `.typed(config)` | JSON-RPC style handler with Zod validation |
 | `.raw(config)` | Full Request/Response control |
+| `.stream(config)` | Validated input, Response output (binary/streaming) |
+| `.sse(config)` | Server-Sent Events with channel subscription |
+| `.formData(config)` | File uploads with validated fields |
+| `.html(config)` | HTML responses for htmx/components |
 | `.<custom>(config)` | Custom handlers from plugins |
 
 ### MiddlewareBuilder Methods
@@ -119,22 +123,132 @@ router.route("greet").typed({
 Full control over Request/Response:
 
 ```ts
-router.route("download").raw({
+router.route("proxy").raw({
   handle: async (req, ctx) => {
-    const file = await Bun.file("data.csv").text();
-    return new Response(file, {
-      headers: { "Content-Type": "text/csv" },
+    return fetch("https://api.example.com", {
+      method: req.method,
+      headers: req.headers,
+      body: req.body,
     });
   },
 });
 ```
 
 **Use cases:**
-- File uploads/downloads
-- Streaming responses
-- SSE endpoints
-- Custom content types
+- Proxying requests
 - WebSocket upgrades
+- Custom protocols
+
+### Stream Handler
+
+Validated input with binary/streaming Response:
+
+```ts
+router.route("files.download").stream({
+  input: z.object({ fileId: z.string() }),
+  handle: async (input, ctx) => {
+    const file = await ctx.plugins.storage.get(input.fileId);
+    return new Response(file.stream, {
+      headers: { "Content-Type": file.mimeType },
+    });
+  },
+});
+```
+
+**Use cases:**
+- File downloads with parameters
+- Video/audio streaming
+- Binary data with metadata
+
+### SSE Handler
+
+Server-Sent Events with automatic channel subscription and typed events:
+
+```ts
+router.route("events.subscribe").sse({
+  input: z.object({ userId: z.string() }),
+  // Optional: Define event schemas for type-safe generated clients
+  events: {
+    notification: z.object({ message: z.string(), id: z.string() }),
+    announcement: z.object({ title: z.string(), urgent: z.boolean() }),
+  },
+  handle: (input, ctx) => {
+    // Return channels to subscribe to
+    return [`user:${input.userId}`, "global"];
+  },
+});
+```
+
+**Server-side broadcasting:**
+```ts
+ctx.core.sse.broadcast("user:123", "notification", { message: "Hello!", id: "1" });
+```
+
+**Generated client usage:**
+```ts
+const connection = api.events.subscribe({ userId: "123" });
+
+// Typed event handlers - no JSON.parse needed
+connection.on("notification", (data) => {
+  // data: { message: string; id: string }
+  console.log(data.message);
+});
+
+// Returns unsubscribe function
+const unsub = connection.on("announcement", (data) => {
+  if (data.urgent) showAlert(data.title);
+});
+unsub(); // Unsubscribe from this handler
+
+connection.close(); // Close the entire connection
+```
+
+**Use cases:**
+- Real-time notifications
+- Live updates
+- Event streaming
+
+### FormData Handler
+
+File uploads with validated fields:
+
+```ts
+router.route("files.upload").formData({
+  input: z.object({ folder: z.string() }),
+  output: z.object({ ids: z.array(z.string()) }),
+  files: { maxSize: 10 * 1024 * 1024, accept: ["image/*"] },
+  handle: async ({ fields, files }, ctx) => {
+    const ids = await Promise.all(
+      files.map(f => ctx.plugins.storage.save(f, fields.folder))
+    );
+    return { ids };
+  },
+});
+```
+
+**Use cases:**
+- File uploads
+- Form submissions with attachments
+- Multi-file uploads
+
+### HTML Handler
+
+HTML responses for htmx and server components:
+
+```ts
+router.route("components.card").html({
+  input: z.object({ userId: z.string() }),
+  handle: async (input, ctx) => {
+    const user = await ctx.plugins.users.get(input.userId);
+    return `<div class="card">${user.name}</div>`;
+  },
+});
+```
+
+**Use cases:**
+- htmx partials
+- Server-rendered components
+- Email templates
 
 ### Custom Handlers
 

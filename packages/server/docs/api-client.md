@@ -141,17 +141,201 @@ const order = await api.orders.create({ items: [...] }, {
 
 ### Raw Routes
 
-For non-JSON endpoints:
+For full Request/Response control:
 
 ```ts
 // Server-side
-router.route("download").raw({
-  handle: async (req, ctx) => new Response(fileBuffer),
+router.route("proxy").raw({
+  handle: async (req, ctx) => fetch("https://api.example.com"),
 });
 
 // Client-side (returns raw Response)
-const response = await api.files.download();
+const response = await api.proxy();
+const data = await response.json();
+```
+
+### Stream Routes
+
+Validated input with binary/streaming Response:
+
+```ts
+// Server-side
+router.route("files.download").stream({
+  input: z.object({ fileId: z.string(), quality: z.enum(["low", "high"]) }),
+  handle: async (input, ctx) => {
+    const file = await ctx.plugins.storage.get(input.fileId);
+    return new Response(file.stream, {
+      headers: { "Content-Type": file.mimeType },
+    });
+  },
+});
+
+// Client-side (typed input, returns Response)
+const response = await api.files.download({ fileId: "abc", quality: "high" });
 const blob = await response.blob();
+
+// For video/audio streaming
+const videoUrl = URL.createObjectURL(await response.blob());
+```
+
+### SSE Routes
+
+Server-Sent Events with automatic channel subscription and **typed event handlers**:
+
+```ts
+// Server-side - define events schema for type-safe client
+router.route("notifications.subscribe").sse({
+  input: z.object({ userId: z.string() }),
+  events: {
+    notification: z.object({ message: z.string(), id: z.string() }),
+    announcement: z.object({ title: z.string(), urgent: z.boolean() }),
+  },
+  handle: (input, ctx) => [`user:${input.userId}`, "global"],
+});
+
+// Client-side (returns typed SSEConnection)
+const connection = api.notifications.subscribe({ userId: "123" });
+
+// Type-safe event handlers - data is fully typed!
+const unsubNotif = connection.on("notification", (data) => {
+  // data: { message: string; id: string }
+  console.log("New notification:", data.message);
+});
+
+const unsubAnnounce = connection.on("announcement", (data) => {
+  // data: { title: string; urgent: boolean }
+  if (data.urgent) showAlert(data.title);
+});
+
+// Unsubscribe from specific handlers
+unsubNotif();
+
+// Handle connection events
+connection.onError((e) => console.error("Connection lost"));
+connection.onOpen(() => console.log("Connected"));
+
+// Check connection state
+console.log(connection.connected); // boolean
+console.log(connection.readyState); // EventSource.OPEN, CONNECTING, CLOSED
+
+// Close entire connection
+connection.close();
+```
+
+**Svelte 5 example:**
+```svelte
+<script lang="ts">
+  import { createApi } from '$lib/api';
+  import type { SSEConnection } from '@donkeylabs/adapter-sveltekit/client';
+
+  const api = createApi();
+  let messages = $state<{ message: string; id: string }[]>([]);
+  let connection: SSEConnection | null = null;
+
+  function connect() {
+    connection = api.notifications.subscribe({ userId: "123" });
+
+    // Typed event handler - no JSON.parse needed!
+    connection.on("notification", (data) => {
+      messages = [...messages, data]; // data is already typed
+    });
+  }
+
+  // Cleanup on unmount
+  $effect(() => () => connection?.close());
+</script>
+
+<button onclick={connect}>Connect</button>
+{#each messages as msg}<p>{msg.message}</p>{/each}
+```
+
+### FormData Routes
+
+File uploads with validated fields:
+
+```ts
+// Server-side
+router.route("files.upload").formData({
+  input: z.object({ folder: z.string(), tags: z.array(z.string()).optional() }),
+  output: z.object({ ids: z.array(z.string()), count: z.number() }),
+  files: { maxSize: 10 * 1024 * 1024, accept: ["image/*", "application/pdf"] },
+  handle: async ({ fields, files }, ctx) => {
+    const ids = await Promise.all(files.map(f => saveFile(f, fields.folder)));
+    return { ids, count: files.length };
+  },
+});
+
+// Client-side (fields + files array)
+const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+const files = Array.from(fileInput.files || []);
+
+const result = await api.files.upload(
+  { folder: "photos", tags: ["vacation", "2024"] },
+  files
+);
+console.log(`Uploaded ${result.count} files:`, result.ids);
+```
+
+**Svelte 5 example:**
+```svelte
+<script lang="ts">
+  import { createApi } from '$lib/api';
+
+  const api = createApi();
+  let uploading = $state(false);
+  let result = $state<{ ids: string[]; count: number } | null>(null);
+
+  async function handleUpload(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const files = Array.from(input.files || []);
+    if (!files.length) return;
+
+    uploading = true;
+    try {
+      result = await api.files.upload({ folder: "uploads" }, files);
+    } finally {
+      uploading = false;
+    }
+  }
+</script>
+
+<input type="file" multiple onchange={handleUpload} disabled={uploading} />
+{#if result}<p>Uploaded {result.count} files</p>{/if}
+```
+
+### HTML Routes
+
+HTML responses for htmx and server components:
+
+```ts
+// Server-side
+router.route("components.userCard").html({
+  input: z.object({ userId: z.string() }),
+  handle: async (input, ctx) => {
+    const user = await ctx.plugins.users.get(input.userId);
+    return `<div class="card">${user.name}</div>`;
+  },
+});
+
+// Client-side (returns HTML string)
+const html = await api.components.userCard({ userId: "123" });
+document.getElementById("container")!.innerHTML = html;
+```
+
+**htmx usage (no client needed):**
+```html
+<!-- htmx calls the route directly -->
+<div hx-get="/api/components.userCard?userId=123"
+     hx-trigger="load"
+     hx-swap="innerHTML">
+  Loading...
+</div>
+
+<!-- With click trigger -->
+<button hx-get="/api/components.userCard?userId=456"
+        hx-target="#card-container">
+  Load User
+</button>
 ```
 
 ---
