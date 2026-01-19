@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/mcp",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "MCP server for AI-assisted development with @donkeylabs/server",
   "type": "module",
   "main": "./src/server.ts",
@@ -46,7 +46,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/donkeylabs/server",
+    "url": "https://github.com/donkeylabs-io/donkeylabs",
     "directory": "packages/mcp"
   },
   "license": "MIT"

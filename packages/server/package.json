@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/server",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "type": "module",
   "description": "Type-safe plugin system for building RPC-style APIs with Bun",
   "main": "./src/index.ts",
@@ -75,7 +75,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/donkeylabs/server"
+    "url": "https://github.com/donkeylabs-io/donkeylabs"
   },
   "license": "MIT"
 }

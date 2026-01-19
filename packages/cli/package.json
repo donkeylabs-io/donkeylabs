@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/cli",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "type": "module",
   "description": "CLI for @donkeylabs/server - project scaffolding and code generation",
   "main": "./src/index.ts",
@@ -47,7 +47,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/donkeylabs/server",
+    "url": "https://github.com/donkeylabs-io/donkeylabs",
     "directory": "packages/cli"
   },
   "license": "MIT"
