@@ -249,14 +249,16 @@ export const FormDataHandler: FormDataHandler = {
       const files: File[] = [];
 
       for (const [key, value] of formData.entries()) {
-        if (value instanceof File) {
+        // Check if value is a File (not a string)
+        if (typeof value !== "string") {
+          const file = value as File;
           // Check file constraints if defined
           if (def.fileConstraints) {
             const { maxSize, accept } = def.fileConstraints;
 
-            if (maxSize && value.size > maxSize) {
+            if (maxSize && file.size > maxSize) {
               return Response.json(
-                { error: `File "${value.name}" exceeds max size of ${maxSize} bytes` },
+                { error: `File "${file.name}" exceeds max size of ${maxSize} bytes` },
                 { status: 400 }
               );
             }
@@ -265,20 +267,20 @@ export const FormDataHandler: FormDataHandler = {
               const isAccepted = accept.some((pattern: string) => {
                 if (pattern.endsWith("/*")) {
                   const prefix = pattern.slice(0, -1);
-                  return value.type.startsWith(prefix);
+                  return file.type.startsWith(prefix);
                 }
-                return value.type === pattern;
+                return file.type === pattern;
               });
 
               if (!isAccepted) {
                 return Response.json(
-                  { error: `File "${value.name}" has invalid type "${value.type}"` },
+                  { error: `File "${file.name}" has invalid type "${file.type}"` },
                   { status: 400 }
                 );
               }
             }
           }
-          files.push(value);
+          files.push(file);
         } else {
           // Try to parse JSON values
           try {

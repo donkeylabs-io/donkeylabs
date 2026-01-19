@@ -56,6 +56,8 @@ export type RouteDefinition<
   output?: z.ZodType<O>;
   /** SSE event schemas (for sse handler only) */
   events?: E;
+  /** File constraints for formData handler */
+  fileConstraints?: FileConstraints;
   middleware?: MiddlewareDefinition[];
   handle: T extends "typed"
     ? (input: I, ctx: ServerContext) => Promise<O> | O

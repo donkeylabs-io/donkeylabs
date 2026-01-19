@@ -604,7 +604,7 @@ ${factoryFunction}
 
     // Final handler
     const finalHandler = async () => {
-      const response = await handler.execute(req, route, route.handle, ctx);
+      const response = await handler.execute(req, route, route.handle as any, ctx);
       // Add CORS headers if provided
       if (Object.keys(corsHeaders).length > 0 && response instanceof Response) {
         const newHeaders = new Headers(response.headers);
@@ -820,7 +820,7 @@ ${factoryFunction}
 
             // Final handler execution
             const finalHandler = async () => {
-              return await handler.execute(req, route, route.handle, ctx);
+              return await handler.execute(req, route, route.handle as any, ctx);
             };
 
             // Execute middleware chain, then handler - with HttpError handling
