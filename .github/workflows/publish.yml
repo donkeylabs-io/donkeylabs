@@ -1,16 +1,19 @@
-name: Publish Packages
+name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
-  workflow_dispatch:
+    branches:
+      - main
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
-  publish:
+  release:
+    name: Release
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+      pull-requests: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -31,21 +34,17 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      - name: Type check
+        run: bun run typecheck
+
       - name: Run tests
         run: cd packages/server && bun test
 
-      - name: Publish @donkeylabs/server
-        run: npm publish --provenance --access public
-        working-directory: packages/server
-
-      - name: Publish @donkeylabs/cli
-        run: npm publish --provenance --access public
-        working-directory: packages/cli
-
-      - name: Publish @donkeylabs/adapter-sveltekit
-        run: npm publish --provenance --access public
-        working-directory: packages/adapter-sveltekit
-
-      - name: Publish @donkeylabs/mcp
-        run: npm publish --provenance --access public
-        working-directory: packages/mcp
+      - name: Create Release Pull Request or Publish
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          version: bunx changeset version
+          publish: npm run release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

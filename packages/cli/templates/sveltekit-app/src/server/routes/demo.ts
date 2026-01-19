@@ -316,4 +316,143 @@ demo.route("workflow.cancel").typed(
   })
 );
 
+// =============================================================================
+// AUDIT - Compliance and tracking (via plugin service)
+// =============================================================================
+
+demo.route("audit.log").typed(
+  defineRoute({
+    input: z.object({
+      action: z.string(),
+      resource: z.string(),
+      resourceId: z.string().optional(),
+      metadata: z.record(z.any()).optional(),
+    }),
+    output: z.object({ id: z.string() }),
+    handle: async (input, ctx) => {
+      return ctx.plugins.demo.auditLog(
+        input.action,
+        input.resource,
+        input.resourceId,
+        input.metadata
+      );
+    },
+  })
+);
+
+demo.route("audit.query").typed(
+  defineRoute({
+    input: z.object({
+      action: z.string().optional(),
+      resource: z.string().optional(),
+      limit: z.number().optional().default(10),
+    }),
+    output: z.object({
+      entries: z.array(
+        z.object({
+          id: z.string(),
+          timestamp: z.string(),
+          action: z.string(),
+          actor: z.string(),
+          resource: z.string(),
+          resourceId: z.string().optional(),
+          metadata: z.record(z.any()).optional(),
+        })
+      ),
+    }),
+    handle: async (input, ctx) => {
+      return ctx.plugins.demo.auditQuery({
+        action: input.action,
+        resource: input.resource,
+        limit: input.limit ?? 10,
+      });
+    },
+  })
+);
+
+demo.route("audit.byResource").typed(
+  defineRoute({
+    input: z.object({
+      resource: z.string(),
+      resourceId: z.string(),
+    }),
+    output: z.object({
+      entries: z.array(
+        z.object({
+          id: z.string(),
+          timestamp: z.string(),
+          action: z.string(),
+          actor: z.string(),
+          metadata: z.record(z.any()).optional(),
+        })
+      ),
+    }),
+    handle: async (input, ctx) => {
+      return ctx.plugins.demo.auditGetByResource(input.resource, input.resourceId);
+    },
+  })
+);
+
+// =============================================================================
+// WEBSOCKET - Bidirectional real-time communication (via plugin service)
+// =============================================================================
+
+demo.route("websocket.broadcast").typed(
+  defineRoute({
+    input: z.object({
+      channel: z.string(),
+      event: z.string().default("message"),
+      data: z.any(),
+    }),
+    output: z.object({ success: z.boolean() }),
+    handle: async (input, ctx) => {
+      return ctx.plugins.demo.wsBroadcast(
+        input.channel,
+        input.event ?? "message",
+        input.data
+      );
+    },
+  })
+);
+
+demo.route("websocket.broadcastAll").typed(
+  defineRoute({
+    input: z.object({
+      event: z.string().default("message"),
+      data: z.any(),
+    }),
+    output: z.object({ success: z.boolean() }),
+    handle: async (input, ctx) => {
+      return ctx.plugins.demo.wsBroadcastAll(input.event ?? "message", input.data);
+    },
+  })
+);
+
+demo.route("websocket.clients").typed(
+  defineRoute({
+    input: z.object({
+      channel: z.string().optional(),
+    }),
+    output: z.object({
+      count: z.number(),
+      clients: z.array(z.string()),
+    }),
+    handle: async (input, ctx) => {
+      return ctx.plugins.demo.wsGetClients(input.channel);
+    },
+  })
+);
+
+demo.route("websocket.clientCount").typed(
+  defineRoute({
+    input: z.object({
+      channel: z.string().optional(),
+    }),
+    output: z.object({ count: z.number() }),
+    handle: async (input, ctx) => {
+      return ctx.plugins.demo.wsGetClientCount(input.channel);
+    },
+  })
+);
+
 export default demo;

@@ -66,6 +66,26 @@
   let eventName = $state("demo.test");
   let eventData = $state('{"hello": "world"}');
 
+  // Audit state
+  let auditAction = $state("user.login");
+  let auditResource = $state("user");
+  let auditResourceId = $state("user-123");
+  let auditEntries = $state<Array<{
+    id: string;
+    timestamp: string;
+    action: string;
+    actor: string;
+    resource: string;
+    resourceId?: string;
+    metadata?: Record<string, any>;
+  }>>([]);
+  let lastAuditId = $state<string | null>(null);
+
+  // WebSocket state
+  let wsChannel = $state("demo");
+  let wsMessage = $state("Hello from browser!");
+  let wsClientCount = $state(0);
+
   // Counter actions - using typed client
   async function counterAction(
     action: "get" | "increment" | "decrement" | "reset",
@@ -170,6 +190,50 @@
     };
   }
 
+  // Audit actions - using typed client
+  async function auditLogEntry() {
+    const result = await client.api.audit.log({
+      action: auditAction,
+      resource: auditResource,
+      resourceId: auditResourceId,
+      metadata: { browser: true, timestamp: Date.now() },
+    }) as { id: string };
+    lastAuditId = result.id;
+    refreshAuditEntries();
+  }
+
+  async function refreshAuditEntries() {
+    const result = await client.api.audit.query({ limit: 10 }) as { entries: typeof auditEntries };
+    auditEntries = result.entries;
+  }
+
+  // WebSocket actions - using typed client
+  async function wsBroadcastMessage() {
+    await client.api.websocket.broadcast({
+      channel: wsChannel,
+      event: "chat",
+      data: {
+        message: wsMessage,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  }
+
+  async function wsBroadcastAll() {
+    await client.api.websocket.broadcastAll({
+      event: "announcement",
+      data: {
+        message: wsMessage,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  }
+
+  async function refreshWsClients() {
+    const result = await client.api.websocket.clientCount({}) as { count: number };
+    wsClientCount = result.count;
+  }
+
   onMount(() => {
     if (!browser) return;
 
@@ -178,6 +242,8 @@
     refreshJobStats();
     refreshCronTasks();
     refreshSSEClients();
+    refreshAuditEntries();
+    refreshWsClients();
 
     // SSE subscription using the typed client
     const unsubscribe = client.sse.subscribe(
@@ -480,6 +546,73 @@
           <Button onclick={emitEvent} size="sm">Emit Event</Button>
           <p class="text-xs text-muted-foreground italic">
             Events matching "demo.*" broadcast to SSE
+          </p>
+        </CardContent>
+      </Card>
+
+      <!-- Audit Demo -->
+      <Card>
+        <CardHeader>
+          <CardTitle>Audit Trail</CardTitle>
+          <CardDescription>Compliance logging and tracking</CardDescription>
+        </CardHeader>
+        <CardContent class="space-y-3">
+          <div class="flex gap-2">
+            <Input bind:value={auditAction} placeholder="Action" class="flex-1" />
+            <Input bind:value={auditResource} placeholder="Resource" class="flex-1" />
+          </div>
+          <Input bind:value={auditResourceId} placeholder="Resource ID (optional)" />
+          <div class="flex gap-2">
+            <Button onclick={auditLogEntry} size="sm">Log Entry</Button>
+            <Button onclick={refreshAuditEntries} size="sm" variant="outline">Refresh</Button>
+          </div>
+          {#if lastAuditId}
+            <p class="text-xs text-muted-foreground">
+              Last: <code class="bg-muted px-1 rounded">{lastAuditId}</code>
+            </p>
+          {/if}
+          {#if auditEntries.length > 0}
+            <div class="max-h-32 overflow-y-auto space-y-1">
+              {#each auditEntries.slice(0, 5) as entry}
+                <div class="text-xs p-2 bg-muted rounded flex justify-between items-center">
+                  <span class="font-medium">{entry.action}</span>
+                  <span class="text-muted-foreground">{entry.resource}</span>
+                  <span class="text-muted-foreground">{new Date(entry.timestamp).toLocaleTimeString()}</span>
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <p class="text-xs text-muted-foreground italic">No audit entries yet</p>
+          {/if}
+        </CardContent>
+      </Card>
+
+      <!-- WebSocket Demo -->
+      <Card>
+        <CardHeader>
+          <CardTitle>WebSocket</CardTitle>
+          <CardDescription>Bidirectional real-time messaging</CardDescription>
+        </CardHeader>
+        <CardContent class="space-y-3">
+          <div class="flex gap-2">
+            <Input bind:value={wsChannel} placeholder="Channel" class="w-28" />
+            <Input bind:value={wsMessage} placeholder="Message" class="flex-1" />
+          </div>
+          <div class="flex gap-2">
+            <Button onclick={wsBroadcastMessage} size="sm">Broadcast</Button>
+            <Button onclick={wsBroadcastAll} size="sm" variant="secondary">Broadcast All</Button>
+            <Button onclick={refreshWsClients} size="sm" variant="outline">Refresh</Button>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="relative flex h-2 w-2">
+              <span class="relative inline-flex rounded-full h-2 w-2 {wsClientCount > 0 ? 'bg-green-500' : 'bg-gray-400'}"></span>
+            </span>
+            <span class="text-xs text-muted-foreground">
+              {wsClientCount} WebSocket client{wsClientCount !== 1 ? 's' : ''} connected
+            </span>
+          </div>
+          <p class="text-xs text-muted-foreground italic">
+            Messages logged to audit trail automatically
           </p>
         </CardContent>
       </Card>

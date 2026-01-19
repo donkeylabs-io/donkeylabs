@@ -6,9 +6,13 @@
   ],
   "scripts": {
     "test": "bun test --filter='packages/*'",
-    "typecheck": "bun --bun tsc --noEmit -p packages/server"
+    "typecheck": "bun --bun tsc --noEmit -p packages/server",
+    "release": "npm publish --provenance --access public -w @donkeylabs/server && npm publish --provenance --access public -w @donkeylabs/cli && npm publish --provenance --access public -w @donkeylabs/adapter-sveltekit && npm publish --provenance --access public -w @donkeylabs/mcp",
+    "changeset": "changeset",
+    "version": "changeset version"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.29.8",
     "@types/bun": "latest",
     "typescript": "^5.0.0"
   }

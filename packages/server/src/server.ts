@@ -16,8 +16,14 @@ import {
   createErrors,
   createWorkflows,
   createProcesses,
+  createAudit,
+  createWebSocket,
   extractClientIP,
   HttpError,
+  KyselyJobAdapter,
+  KyselyProcessAdapter,
+  KyselyWorkflowAdapter,
+  KyselyAuditAdapter,
   type LoggerConfig,
   type CacheConfig,
   type EventsConfig,
@@ -28,6 +34,8 @@ import {
   type ErrorsConfig,
   type WorkflowsConfig,
   type ProcessesConfig,
+  type AuditConfig,
+  type WebSocketConfig,
 } from "./core/index";
 import { zodSchemaToTs } from "./generator/zod-to-ts";
 
@@ -63,6 +71,14 @@ export interface ServerConfig {
   errors?: ErrorsConfig;
   workflows?: WorkflowsConfig;
   processes?: ProcessesConfig;
+  audit?: AuditConfig;
+  websocket?: WebSocketConfig;
+  /**
+   * Use legacy separate databases for core services.
+   * Set to true to keep using .donkeylabs/*.db files instead of shared DB.
+   * @deprecated Migrate to shared DB for better consistency.
+   */
+  useLegacyCoreDatabases?: boolean;
 }
 
 export class AppServer {
@@ -76,25 +92,55 @@ export class AppServer {
   constructor(options: ServerConfig) {
     this.port = options.port ?? 3000;
 
+    // Determine if we should use legacy databases
+    const useLegacy = options.useLegacyCoreDatabases ?? false;
+
     // Initialize core services
     const logger = createLogger(options.logger);
     const cache = createCache(options.cache);
     const events = createEvents(options.events);
     const cron = createCron(options.cron);
-    const jobs = createJobs({ ...options.jobs, events }); // Jobs can emit events
     const sse = createSSE(options.sse);
     const rateLimiter = createRateLimiter(options.rateLimiter);
     const errors = createErrors(options.errors);
+
+    // Create adapters - use Kysely by default, or legacy SQLite if requested
+    const jobAdapter = options.jobs?.adapter ?? (useLegacy ? undefined : new KyselyJobAdapter(options.db));
+    const workflowAdapter = options.workflows?.adapter ?? (useLegacy ? undefined : new KyselyWorkflowAdapter(options.db));
+    const auditAdapter = options.audit?.adapter ?? new KyselyAuditAdapter(options.db);
+
+    // Jobs can emit events and use Kysely adapter
+    const jobs = createJobs({
+      ...options.jobs,
+      events,
+      adapter: jobAdapter,
+      // Disable built-in persistence when using Kysely adapter
+      persist: useLegacy ? options.jobs?.persist : false,
+    });
+
+    // Workflows with Kysely adapter for persistence
     const workflows = createWorkflows({
       ...options.workflows,
       events,
       jobs,
       sse,
+      adapter: workflowAdapter,
     });
+
+    // Processes - still uses its own adapter pattern but can use Kysely
+    // Note: ProcessesImpl creates its own SqliteProcessAdapter internally
+    // For full Kysely support, we need to modify processes.ts
     const processes = createProcesses({
       ...options.processes,
       events,
     });
+
+    // New services
+    const audit = createAudit({
+      ...options.audit,
+      adapter: auditAdapter,
+    });
+    const websocket = createWebSocket(options.websocket);
 
     this.coreServices = {
       db: options.db,
@@ -109,6 +155,8 @@ export class AppServer {
       errors,
       workflows,
       processes,
+      audit,
+      websocket,
     };
 
     this.manager = new PluginManager(this.coreServices);
@@ -844,11 +892,17 @@ ${factoryFunction}
     // Stop SSE (closes all client connections)
     this.coreServices.sse.shutdown();
 
+    // Stop WebSocket connections
+    this.coreServices.websocket.shutdown();
+
     // Stop background services
     await this.coreServices.processes.shutdown();
     await this.coreServices.workflows.stop();
     await this.coreServices.jobs.stop();
     await this.coreServices.cron.stop();
+
+    // Stop audit service (cleanup timers)
+    this.coreServices.audit.stop();
 
     logger.info("Server shutdown complete");
   }

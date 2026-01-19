@@ -37,7 +37,7 @@
   },
   "peerDependencies": {
     "@sveltejs/kit": "^2.0.0",
-    "@donkeylabs/server": "^0.4.0"
+    "@donkeylabs/server": "^0.6.0"
   },
   "keywords": [
     "sveltekit",

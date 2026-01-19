@@ -104,6 +104,68 @@ export const demoPlugin = createPlugin.define({
         total: ctx.core.sse.getClients().length,
         byChannel: ctx.core.sse.getClientsByChannel("events").length,
       }),
+
+      // Audit helpers - compliance and tracking
+      auditLog: async (action: string, resource: string, resourceId?: string, metadata?: Record<string, any>) => {
+        const id = await ctx.core.audit.log({
+          action,
+          actor: "demo-user", // In real apps, get from auth context
+          resource,
+          resourceId,
+          metadata,
+        });
+        return { id };
+      },
+      auditQuery: async (filters: { action?: string; resource?: string; limit?: number }) => {
+        const entries = await ctx.core.audit.query({
+          action: filters.action,
+          resource: filters.resource,
+          limit: filters.limit ?? 10,
+        });
+        return {
+          entries: entries.map(e => ({
+            id: e.id,
+            timestamp: e.timestamp.toISOString(),
+            action: e.action,
+            actor: e.actor,
+            resource: e.resource,
+            resourceId: e.resourceId,
+            metadata: e.metadata,
+          })),
+        };
+      },
+      auditGetByResource: async (resource: string, resourceId: string) => {
+        const entries = await ctx.core.audit.getByResource(resource, resourceId);
+        return {
+          entries: entries.map(e => ({
+            id: e.id,
+            timestamp: e.timestamp.toISOString(),
+            action: e.action,
+            actor: e.actor,
+            metadata: e.metadata,
+          })),
+        };
+      },
+
+      // WebSocket helpers - bidirectional real-time communication
+      wsBroadcast: (channel: string, event: string, data: any) => {
+        ctx.core.websocket.broadcast(channel, event, data);
+        return { success: true };
+      },
+      wsBroadcastAll: (event: string, data: any) => {
+        ctx.core.websocket.broadcastAll(event, data);
+        return { success: true };
+      },
+      wsGetClients: (channel?: string) => {
+        const clients = ctx.core.websocket.getClients(channel);
+        return {
+          count: clients.length,
+          clients,
+        };
+      },
+      wsGetClientCount: (channel?: string) => {
+        return { count: ctx.core.websocket.getClientCount(channel) };
+      },
     };
   },
   init: async (ctx) => {
@@ -139,6 +201,58 @@ export const demoPlugin = createPlugin.define({
       });
     });
 
-    ctx.core.logger.info("Demo plugin initialized with all core services");
+    // WebSocket message handler - echo messages back and broadcast to channel
+    ctx.core.websocket.onMessage(async (clientId, event, data) => {
+      ctx.core.logger.info("WebSocket message received", { clientId, event, data });
+
+      // Echo the message back to the sender
+      if (event === "echo") {
+        ctx.core.websocket.send(clientId, "echo-reply", {
+          original: data,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      // Broadcast to a channel if requested
+      if (event === "broadcast" && data?.channel) {
+        ctx.core.websocket.broadcast(data.channel, "ws-broadcast", {
+          from: clientId,
+          message: data.message,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      // Log WebSocket activity to audit trail
+      await ctx.core.audit.log({
+        action: "websocket.message",
+        actor: clientId,
+        resource: "websocket",
+        resourceId: event,
+        metadata: { event, dataSize: JSON.stringify(data).length },
+      });
+    });
+
+    // Audit important events for compliance tracking
+    ctx.core.events.on("job.completed", async (data: any) => {
+      await ctx.core.audit.log({
+        action: "job.completed",
+        actor: "system",
+        resource: "job",
+        resourceId: data.jobId,
+        metadata: { name: data.name },
+      });
+    });
+
+    ctx.core.events.on("workflow.completed", async (data: any) => {
+      await ctx.core.audit.log({
+        action: "workflow.completed",
+        actor: "system",
+        resource: "workflow",
+        resourceId: data.instanceId,
+        metadata: { workflowName: data.workflowName },
+      });
+    });
+
+    ctx.core.logger.info("Demo plugin initialized with all core services (including audit & websocket)");
   },
 });

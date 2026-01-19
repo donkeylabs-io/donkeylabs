@@ -13,6 +13,11 @@ import {
   createErrors,
   createWorkflows,
   createProcesses,
+  createAudit,
+  createWebSocket,
+  KyselyJobAdapter,
+  KyselyWorkflowAdapter,
+  MemoryAuditAdapter,
 } from "./core/index";
 
 /**
@@ -27,17 +32,37 @@ export async function createTestHarness(targetPlugin: Plugin, dependencies: Plug
     dialect: new BunSqliteDialect({ database: new Database(":memory:") }),
   });
 
-  // 2. Initialize Core Services
+  // 2. Initialize Core Services with Kysely adapters for in-memory testing
   const logger = createLogger({ level: "warn" }); // Less verbose in tests
   const cache = createCache();
   const events = createEvents();
   const cron = createCron();
-  const jobs = createJobs({ events });
   const sse = createSSE();
   const rateLimiter = createRateLimiter();
   const errors = createErrors();
-  const workflows = createWorkflows({ events, jobs, sse });
+
+  // Use Kysely adapters with in-memory DB for jobs and workflows
+  const jobAdapter = new KyselyJobAdapter(db, { cleanupDays: 0 }); // No cleanup in tests
+  const workflowAdapter = new KyselyWorkflowAdapter(db, { cleanupDays: 0 });
+
+  const jobs = createJobs({
+    events,
+    adapter: jobAdapter,
+    persist: false, // Using Kysely adapter
+  });
+
+  const workflows = createWorkflows({
+    events,
+    jobs,
+    sse,
+    adapter: workflowAdapter,
+  });
+
   const processes = createProcesses({ events, autoRecoverOrphans: false });
+
+  // Use in-memory adapter for audit in tests
+  const audit = createAudit({ adapter: new MemoryAuditAdapter() });
+  const websocket = createWebSocket();
 
   const core: CoreServices = {
     db,
@@ -52,6 +77,8 @@ export async function createTestHarness(targetPlugin: Plugin, dependencies: Plug
     errors,
     workflows,
     processes,
+    audit,
+    websocket,
   };
 
   const manager = new PluginManager(core);
@@ -62,7 +89,7 @@ export async function createTestHarness(targetPlugin: Plugin, dependencies: Plug
   }
   manager.register(targetPlugin);
 
-  // 4. Run Migrations (Real Kysely Migrations!)
+  // 4. Run Migrations (Core + Plugin Migrations!)
   await manager.migrate();
 
   // 5. Init Plugins

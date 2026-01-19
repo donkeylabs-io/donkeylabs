@@ -245,8 +245,10 @@ describe("Migration Tracking", () => {
       await manager.migrate();
 
       // Check both plugins have their migrations tracked independently
+      // Filter out @core/ migrations which are also tracked now
       const result = await sql<{ plugin_name: string; migration_name: string }>`
         SELECT plugin_name, migration_name FROM __donkeylabs_migrations__
+        WHERE plugin_name NOT LIKE '@core/%'
         ORDER BY plugin_name
       `.execute(db);
 

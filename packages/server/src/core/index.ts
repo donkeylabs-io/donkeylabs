@@ -53,6 +53,11 @@ export {
 } from "./job-adapter-sqlite";
 
 export {
+  KyselyJobAdapter,
+  type KyselyJobAdapterConfig,
+} from "./job-adapter-kysely";
+
+export {
   type ExternalJobConfig,
   type ExternalJob,
   type ExternalJobProcessState,
@@ -165,8 +170,40 @@ export {
 } from "./process-adapter-sqlite";
 
 export {
+  KyselyProcessAdapter,
+  type KyselyProcessAdapterConfig,
+} from "./process-adapter-kysely";
+
+export {
   type ProcessSocketServer,
   type ProcessMessage,
   type ProcessSocketConfig,
   createProcessSocketServer,
 } from "./process-socket";
+
+export {
+  KyselyWorkflowAdapter,
+  type KyselyWorkflowAdapterConfig,
+} from "./workflow-adapter-kysely";
+
+export {
+  type Audit,
+  type AuditEntry,
+  type AuditQueryFilters,
+  type AuditAdapter,
+  type AuditConfig,
+  type KyselyAuditAdapterConfig,
+  KyselyAuditAdapter,
+  MemoryAuditAdapter,
+  createAudit,
+} from "./audit";
+
+export {
+  type WebSocketService,
+  type WebSocketClient,
+  type WebSocketData,
+  type WebSocketMessage,
+  type WebSocketMessageHandler,
+  type WebSocketConfig,
+  createWebSocket,
+} from "./websocket";

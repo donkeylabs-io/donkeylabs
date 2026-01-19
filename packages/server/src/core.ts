@@ -1,6 +1,8 @@
 import { sql, type Kysely } from "kysely";
+import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { z } from "zod";
 import type { Logger } from "./core/logger";
 import type { Cache } from "./core/cache";
@@ -12,6 +14,8 @@ import type { RateLimiter } from "./core/rate-limiter";
 import type { Errors, CustomErrorRegistry } from "./core/errors";
 import type { Workflows } from "./core/workflows";
 import type { Processes } from "./core/processes";
+import type { Audit } from "./core/audit";
+import type { WebSocketService } from "./core/websocket";
 
 export interface PluginRegistry {}
 
@@ -56,6 +60,8 @@ export interface CoreServices {
   errors: Errors;
   workflows: Workflows;
   processes: Processes;
+  audit: Audit;
+  websocket: WebSocketService;
 }
 
 /**
@@ -398,11 +404,102 @@ export class PluginManager {
     `.execute(this.core.db);
   }
 
+  /**
+   * Get the directory where core migrations are stored.
+   * This handles both development (src) and production (dist) scenarios.
+   */
+  private getCoreMigrationsDir(): string {
+    // Try to find migrations relative to this file's location
+    const currentDir = dirname(fileURLToPath(import.meta.url));
+    const migrationsDir = join(currentDir, "core", "migrations");
+    return migrationsDir;
+  }
+
+  /**
+   * Run migrations for a specific plugin/service with the given migrations directory.
+   */
+  private async runMigrationsForPlugin(pluginName: string, migrationDir: string): Promise<void> {
+    try {
+      const files = await readdir(migrationDir);
+      const migrationFiles = files.filter((f) => f.endsWith(".ts") || f.endsWith(".js"));
+
+      if (migrationFiles.length === 0) return;
+
+      console.log(`[Migration] checking: ${pluginName} at ${migrationDir}`);
+
+      for (const file of migrationFiles.sort()) {
+        // Check if this migration has already been applied
+        const isApplied = await this.isMigrationApplied(pluginName, file);
+        if (isApplied) {
+          console.log(`  - Skipping (already applied): ${file}`);
+          continue;
+        }
+
+        console.log(`  - Executing migration: ${file}`);
+        const migrationPath = join(migrationDir, file);
+
+        let migration;
+        try {
+          migration = await import(migrationPath);
+        } catch (importError) {
+          const err = importError instanceof Error ? importError : new Error(String(importError));
+          throw new Error(`Failed to import migration ${file}: ${err.message}`);
+        }
+
+        if (migration.up) {
+          try {
+            await migration.up(this.core.db);
+            // Record successful migration
+            await this.recordMigration(pluginName, file);
+            console.log(`    Success`);
+          } catch (e) {
+            console.error(`    Failed to run ${file}:`, e);
+            throw e; // Stop on migration failure - don't continue with inconsistent state
+          }
+        }
+      }
+    } catch (e) {
+      // Re-throw migration execution errors (they've already been logged)
+      // Only silently catch directory read errors (ENOENT)
+      const isDirectoryError =
+        e instanceof Error &&
+        ((e as NodeJS.ErrnoException).code === "ENOENT" ||
+          (e as NodeJS.ErrnoException).code === "ENOTDIR");
+      if (!isDirectoryError) {
+        throw e;
+      }
+    }
+  }
+
+  /**
+   * Run core migrations for built-in services (jobs, processes, workflows, audit).
+   * Core migrations are tracked with @core/ prefix in the same migrations table.
+   * This runs BEFORE plugin migrations to ensure core tables exist.
+   */
+  async migrateCore(): Promise<void> {
+    console.log("Running core migrations...");
+
+    const coreMigrationsDir = this.getCoreMigrationsDir();
+    const coreServices = ["jobs", "processes", "workflows", "audit"];
+
+    for (const service of coreServices) {
+      const migrationDir = join(coreMigrationsDir, service);
+      if (existsSync(migrationDir)) {
+        await this.runMigrationsForPlugin(`@core/${service}`, migrationDir);
+      }
+    }
+
+    console.log("Core migrations complete.");
+  }
+
   async migrate(): Promise<void> {
     console.log("Running migrations (File-System Based)...");
 
     // Ensure the migrations tracking table exists
     await this.ensureMigrationsTable();
+
+    // Run core migrations FIRST (before plugin migrations)
+    await this.migrateCore();
 
     const sortedPlugins = this.resolveOrder();
 
