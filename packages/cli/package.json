@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/cli",
-  "version": "0.6.4",
+  "version": "1.0.0",
   "type": "module",
   "description": "CLI for @donkeylabs/server - project scaffolding and code generation",
   "main": "./src/index.ts",
@@ -35,7 +35,7 @@
     "@types/prompts": "^2.4.9"
   },
   "peerDependencies": {
-    "@donkeylabs/server": "^0.6.0"
+    "@donkeylabs/server": "^1.0.0"
   },
   "keywords": [
     "cli",
