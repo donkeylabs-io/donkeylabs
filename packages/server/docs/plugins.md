@@ -4,6 +4,7 @@ Plugins are the core building blocks of this framework. Each plugin encapsulates
 
 ## Table of Contents
 
+- [When to Create a Plugin vs Route](#when-to-create-a-plugin-vs-route)
 - [Creating a Plugin](#creating-a-plugin)
 - [Plugin with Database Schema](#plugin-with-database-schema)
 - [Plugin with Configuration](#plugin-with-configuration)
@@ -13,6 +14,126 @@ Plugins are the core building blocks of this framework. Each plugin encapsulates
 - [Plugin Context](#plugin-context)
 - [Type Inference](#type-inference)
 - [Plugin Lifecycle](#plugin-lifecycle)
+
+---
+
+## When to Create a Plugin vs Route
+
+Understanding when to create a plugin versus a route is fundamental to building maintainable applications.
+
+### The Core Principle
+
+**Plugins = Reusable Business Logic** | **Routes = App-Specific API Endpoints**
+
+Think of plugins as your application's "services layer" and routes as your "API layer".
+
+### Create a Plugin When:
+
+1. **The logic could be reused** across multiple routes or applications
+   - Example: User authentication, email sending, payment processing
+
+2. **You need database tables** for a domain concept
+   - Example: A "users" plugin that owns the users table and provides CRUD methods
+
+3. **The functionality is self-contained** with its own data and operations
+   - Example: A "notifications" plugin with its own tables, delivery logic, and scheduling
+
+4. **You want to share state or connections** (database, external APIs)
+   - Example: A "stripe" plugin that manages the Stripe SDK connection
+
+5. **You're building cross-cutting concerns** like auth middleware, rate limiting, or logging
+
+### Create a Route When:
+
+1. **Exposing plugin functionality** to the outside world via HTTP
+   - Example: A `users.create` route that calls `ctx.plugins.users.create()`
+
+2. **Combining multiple plugins** for a specific use case
+   - Example: A checkout route that uses cart, payment, and inventory plugins
+
+3. **App-specific endpoints** that don't need to be reused
+   - Example: A dashboard summary endpoint specific to your app
+
+4. **Simple operations** that don't warrant a full plugin
+   - Example: A health check endpoint
+
+### Decision Flowchart
+
+```
+Is this logic reusable across routes or apps?
+  ├── Yes → Create a Plugin
+  └── No
+       ├── Does it need its own database tables?
+       │     └── Yes → Create a Plugin (with hasSchema: true)
+       └── Is it just exposing existing functionality via HTTP?
+             └── Yes → Create a Route that uses existing plugins
+```
+
+### Example: Building a Task Management System
+
+**Step 1: Identify reusable domains → Create Plugins**
+- `tasks` plugin - owns tasks table, CRUD methods
+- `users` plugin - owns users table, auth methods
+- `notifications` plugin - handles email/push notifications
+
+**Step 2: Create app-specific routes that use plugins**
+```ts
+// routes/tasks/index.ts
+router.route("create").typed({
+  input: CreateTaskInput,
+  handle: async (input, ctx) => {
+    // Use tasks plugin for business logic
+    const task = await ctx.plugins.tasks.create(input);
+
+    // Use notifications plugin for side effects
+    await ctx.plugins.notifications.notify(
+      task.assigneeId,
+      `New task: ${task.title}`
+    );
+
+    return task;
+  },
+});
+```
+
+### Anti-Patterns to Avoid
+
+❌ **Don't put business logic in routes** - Routes should be thin; delegate to plugins
+
+```ts
+// BAD: Business logic in route
+router.route("create").typed({
+  handle: async (input, ctx) => {
+    // 50 lines of validation, database calls, notifications...
+  },
+});
+
+// GOOD: Thin route, logic in plugin
+router.route("create").typed({
+  handle: async (input, ctx) => {
+    return ctx.plugins.tasks.create(input);
+  },
+});
+```
+
+❌ **Don't create a plugin for every route** - Only for reusable logic
+
+```ts
+// BAD: Plugin just wrapping a single database call
+export const dashboardPlugin = createPlugin.define({
+  name: "dashboard",
+  service: async (ctx) => ({
+    getSummary: () => ctx.db.selectFrom("stats").execute(),
+  }),
+});
+
+// GOOD: Just make it a route
+router.route("dashboard.summary").typed({
+  handle: async (_, ctx) => {
+    return ctx.db.selectFrom("stats").execute();
+  },
+});
+```
 
 ---
 

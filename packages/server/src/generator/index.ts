@@ -312,30 +312,38 @@ export function generateClientFromRoutes(
 ): string {
   const opts = { ...defaultGeneratorOptions, ...options };
 
+  // Check if all routes share a common prefix (e.g., "api.") - if so, skip it
+  // Common prefix stripping is disabled to respect explicit router nesting
+  const routesToProcess = routes;
+
   // Group routes by namespace
   const tree = new Map<string, Map<string, { method: string; fullName: string }[]>>();
 
-  for (const route of routes) {
+  for (const route of routesToProcess) {
+    // Find original route name for the actual request
+    const originalRoute = routes.find(r => r.name.endsWith(route.name));
+    const fullName = originalRoute?.name || route.name;
+
     const parts = route.name.split(".");
     if (parts.length < 2) {
       const ns = "";
       if (!tree.has(ns)) tree.set(ns, new Map());
       const rootMethods = tree.get(ns)!;
       if (!rootMethods.has("")) rootMethods.set("", []);
-      rootMethods.get("")!.push({ method: parts[0]!, fullName: route.name });
+      rootMethods.get("")!.push({ method: parts[0]!, fullName });
     } else if (parts.length === 2) {
       const [ns, method] = parts;
       if (!tree.has(ns!)) tree.set(ns!, new Map());
       const nsMethods = tree.get(ns!)!;
       if (!nsMethods.has("")) nsMethods.set("", []);
-      nsMethods.get("")!.push({ method: method!, fullName: route.name });
+      nsMethods.get("")!.push({ method: method!, fullName });
     } else {
       const [ns, sub, ...rest] = parts;
       const method = rest.join(".");
       if (!tree.has(ns!)) tree.set(ns!, new Map());
       const nsMethods = tree.get(ns!)!;
       if (!nsMethods.has(sub!)) nsMethods.set(sub!, []);
-      nsMethods.get(sub!)!.push({ method: method || sub!, fullName: route.name });
+      nsMethods.get(sub!)!.push({ method: method || sub!, fullName });
     }
   }
 
@@ -435,8 +443,12 @@ export function generateClientCode(
       .map((r) => {
         const inputType = zodToTypeScript(r.inputSource);
         const outputType = zodToTypeScript(r.outputSource);
-        return `    export type ${toPascalCase(r.routeName)}Input = ${inputType};
-    export type ${toPascalCase(r.routeName)}Output = ${outputType};`;
+        const routeNs = toPascalCase(r.routeName);
+        return `    export namespace ${routeNs} {
+      export type Input = ${inputType};
+      export type Output = ${outputType};
+    }
+    export type ${routeNs} = { Input: ${routeNs}.Input; Output: ${routeNs}.Output };`;
       });
 
     if (typeEntries.length > 0) {
@@ -448,8 +460,8 @@ ${typeEntries.join("\n\n")}
     const methodEntries = prefixRoutes
       .filter((r) => r.handler === "typed")
       .map((r) => {
-        const inputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}Input`;
-        const outputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}Output`;
+        const inputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Input`;
+        const outputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Output`;
         return `    ${toCamelCase(r.routeName)}: (input: ${inputType}, options?: RequestOptions): Promise<${outputType}> =>
       this.request("${r.name}", input, options)`;
       });
@@ -549,3 +561,6 @@ export function createApiClient(config: ApiClientConfig): ApiClient {
 export { ApiError, ValidationError, type RequestOptions, type SSEOptions };
 `;
 }
+
+// Re-export runtime Zod to TypeScript converter
+export { zodSchemaToTs } from "./zod-to-ts";

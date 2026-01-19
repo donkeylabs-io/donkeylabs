@@ -8,6 +8,84 @@ alwaysApply: false
 
 A **type-safe plugin system** for building RPC-style APIs with Bun. Features automatic dependency resolution, database schema merging, custom handlers, middleware, and built-in core services.
 
+---
+
+## AI Assistant Instructions
+
+**IMPORTANT: Follow these guidelines when working with this codebase.**
+
+### 1. Use MCP Tools First
+
+When the `donkeylabs` MCP server is available, **always use MCP tools** instead of writing code manually:
+
+| Task | Use MCP Tool |
+|------|--------------|
+| Create a plugin | `create_plugin` |
+| Add a route | `add_route` |
+| Add database migration | `add_migration` |
+| Add service method | `add_service_method` |
+| Generate types | `generate_types` |
+
+MCP tools ensure correct file structure, naming conventions, and patterns.
+
+### 2. Read Docs Before Implementing
+
+Before implementing any feature, **read the relevant documentation**:
+
+| Feature | Read First |
+|---------|------------|
+| Testing | [docs/testing.md](docs/testing.md) - Test harness, unit & integration tests |
+| Database queries | [docs/database.md](docs/database.md) - Use Kysely, NOT raw SQL |
+| Creating plugins | [docs/plugins.md](docs/plugins.md) - Includes plugin vs route decision |
+| Adding routes | [docs/router.md](docs/router.md) |
+| Migrations | [docs/database.md](docs/database.md) - Use Kysely schema builder |
+| Middleware | [docs/middleware.md](docs/middleware.md) |
+| Background jobs | [docs/jobs.md](docs/jobs.md) |
+| Cron tasks | [docs/cron.md](docs/cron.md) |
+
+### 3. Key Patterns to Follow
+
+- **Plugins vs Routes**: Plugins = reusable business logic; Routes = API endpoints. See [docs/plugins.md](docs/plugins.md)
+- **Kysely for DB**: Always use Kysely query builder, never raw SQL. See [docs/database.md](docs/database.md)
+- **Migrations**: Use TypeScript migrations with Kysely schema builder (NOT `sql` tagged templates)
+- **Type generation**: Run `donkeylabs generate` after adding plugins/migrations
+- **Thin routes**: Keep route handlers thin; delegate business logic to plugin services
+
+### 4. Write Tests
+
+**REQUIRED: Write tests for new functionality.** See [docs/testing.md](docs/testing.md)
+
+```ts
+import { createTestHarness } from "@donkeylabs/server/harness";
+import { myPlugin } from "./plugins/myPlugin";
+
+const { manager, db, core } = await createTestHarness(myPlugin);
+const service = manager.getServices().myPlugin;
+```
+
+- **Unit tests**: Test plugin service methods in isolation
+- **Integration tests**: Test plugins working together
+- **Place tests next to code**: `plugins/users/tests/unit.test.ts`
+
+### 5. Verify Before Committing
+
+**REQUIRED: Always run these checks before finishing:**
+
+```sh
+# 1. Type check - catch type errors
+bun --bun tsc --noEmit
+
+# 2. Run tests - ensure nothing is broken
+bun test
+
+# 3. Generate types - if you added plugins/migrations
+donkeylabs generate
+```
+
+**Do NOT skip these steps.** Type errors and failing tests must be fixed before completion.
+
+---
+
 ## Bun-First Development
 
 Always use Bun instead of Node.js:
@@ -310,6 +388,8 @@ Detailed documentation is available in the `docs/` directory:
 
 | Document | Description |
 |----------|-------------|
+| [testing.md](docs/testing.md) | Test harness, unit tests, integration tests, mocking |
+| [database.md](docs/database.md) | Kysely queries, CRUD operations, joins, transactions, migrations |
 | [plugins.md](docs/plugins.md) | Creating plugins, schemas, dependencies, middleware, and init hooks |
 | [router.md](docs/router.md) | Routes, handlers, input/output validation, middleware chains |
 | [middleware.md](docs/middleware.md) | Creating and using middleware with typed configuration |
@@ -325,9 +405,7 @@ Detailed documentation is available in the `docs/` directory:
 | [errors.md](docs/errors.md) | Error factories and custom errors |
 | [api-client.md](docs/api-client.md) | Generated API client usage |
 | [project-structure.md](docs/project-structure.md) | Recommended project organization |
-| [testing.md](docs/testing.md) | Test harness, unit tests, integration tests |
 | [cli.md](docs/cli.md) | CLI commands and interactive mode |
-| [svelte-frontend.md](docs/svelte-frontend.md) | Svelte 5 frontend integration |
 | [sveltekit-adapter.md](docs/sveltekit-adapter.md) | SvelteKit adapter integration |
 
 ---

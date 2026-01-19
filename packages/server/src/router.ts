@@ -36,10 +36,18 @@ export type RouteDefinition<
     : HandlerRegistry[T]["__signature"];
 };
 
+export interface HandlerClass<I = any, O = any> {
+  new (ctx: ServerContext): { handle(input: I): Promise<O> | O };
+}
+
+function isHandlerClass(fn: any): fn is HandlerClass {
+  return typeof fn === 'function' && fn.prototype && typeof fn.prototype.handle === 'function';
+}
+
 export interface TypedRouteConfig<I = any, O = any> {
   input?: z.ZodType<I>;
   output?: z.ZodType<O>;
-  handle: (input: I, ctx: ServerContext) => Promise<O> | O;
+  handle: ((input: I, ctx: ServerContext) => Promise<O> | O) | HandlerClass<I, O>;
 }
 
 export interface RouteMetadata {
@@ -69,6 +77,10 @@ export class RouteBuilder<TRouter extends Router> implements IRouteBuilderBase<T
   ) {}
 
   typed<I, O>(config: TypedRouteConfig<I, O>): TRouter {
+    if (isHandlerClass(config.handle)) {
+        const HandlerClass = config.handle;
+        config.handle = (input, ctx) => new HandlerClass(ctx).handle(input);
+    }
     return this.router.addRoute(this.name, "typed", config, this._middleware);
   }
 
@@ -156,6 +168,23 @@ export class Router implements IRouter {
     }));
   }
 
+  /** Get route metadata with TypeScript type strings for code generation */
+  getTypedMetadata(): Array<{
+    name: string;
+    handler: string;
+    inputType?: string;
+    outputType?: string;
+  }> {
+    // Dynamic import to avoid circular deps
+    const { zodSchemaToTs } = require("./generator/zod-to-ts");
+    return this.getRoutes().map(route => ({
+      name: route.name,
+      handler: route.handler,
+      inputType: route.input ? zodSchemaToTs(route.input) : undefined,
+      outputType: route.output ? zodSchemaToTs(route.output) : undefined,
+    }));
+  }
+
   getPrefix(): string {
     return this.prefix;
   }
@@ -177,3 +206,20 @@ function createMiddlewareBuilderProxy<TRouter extends Router>(router: TRouter): 
 }
 
 export const createRouter = (prefix?: string): IRouter => new Router(prefix);
+
+/**
+ * Define a route with type inference for input/output schemas.
+ *
+ * @example
+ * export const myRoute = defineRoute({
+ *   input: z.object({ name: z.string() }),
+ *   output: z.object({ greeting: z.string() }),
+ *   handle: async ({ name }, ctx) => {
+ *     return { greeting: `Hello ${name}` };
+ *   }
+ * });
+ */
+export function defineRoute<I, O>(config: TypedRouteConfig<I, O>): TypedRouteConfig<I, O> {
+  return config;
+}
+

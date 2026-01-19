@@ -4,7 +4,17 @@
 export { AppServer, type ServerConfig } from "./server";
 
 // Router
-export { createRouter, type Router, type RouteBuilder, type ServerContext, type IRouter, type IRouteBuilder, type IMiddlewareBuilder } from "./router";
+export {
+  createRouter,
+  defineRoute,
+  type Router,
+  type RouteBuilder,
+  type ServerContext,
+  type IRouter,
+  type IRouteBuilder,
+  type IMiddlewareBuilder,
+  type TypedRouteConfig,
+} from "./router";
 
 // Handlers
 export {
@@ -35,6 +45,7 @@ export {
   type InferHandlers,
   type InferMiddleware,
   type InferDependencies,
+  type EventSchemas,
 } from "./core";
 
 // Middleware
@@ -62,3 +73,14 @@ export function defineConfig(config: DonkeylabsConfig): DonkeylabsConfig {
 
 // Re-export HttpError for custom error creation
 export { HttpError } from "./core/errors";
+
+// Workflows (step functions)
+export {
+  workflow,
+  WorkflowBuilder,
+  type WorkflowDefinition,
+  type WorkflowInstance,
+  type WorkflowStatus,
+  type WorkflowContext,
+  type Workflows,
+} from "./core/workflows";

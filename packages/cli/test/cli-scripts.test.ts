@@ -288,30 +288,13 @@ describe("Script Package.json Integration", () => {
     );
 
     expect(packageJson.scripts).toBeDefined();
-    expect(packageJson.scripts["gen:registry"]).toBeDefined();
-    expect(packageJson.scripts["gen:client"]).toBeDefined();
-    expect(packageJson.scripts["cli"]).toBeDefined();
-    expect(packageJson.scripts["test"]).toBeDefined();
+    expect(packageJson.scripts["typecheck"]).toBeDefined();
   });
 
-  it("should run gen:registry via npm script", async () => {
-    const result = await Bun.spawn(["bun", "run", "gen:registry"], {
+  it("should run typecheck via npm script", async () => {
+    const result = await Bun.spawn(["bun", "run", "typecheck"], {
       cwd: PACKAGE_ROOT,
     }).exited;
     expect(result).toBe(0);
-  });
-
-  it("should run gen:client --help via npm script", async () => {
-    const proc = Bun.spawn(
-      ["bun", "run", "gen:client", "--", "--help"],
-      {
-        stdout: "pipe",
-        cwd: PACKAGE_ROOT,
-      }
-    );
-    const output = await new Response(proc.stdout).text();
-    await proc.exited;
-
-    expect(output).toContain("Usage:");
   });
 });

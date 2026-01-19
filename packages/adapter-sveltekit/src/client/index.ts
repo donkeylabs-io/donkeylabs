@@ -88,6 +88,23 @@ export class UnifiedApiClientBase {
   }
 
   /**
+   * Make a raw request (for non-JSON endpoints like streaming).
+   * Returns the raw Response object without processing.
+   */
+  protected async rawRequest(
+    route: string,
+    init?: RequestInit
+  ): Promise<Response> {
+    const url = `${this.baseUrl}/${route}`;
+    const fetchFn = this.customFetch ?? fetch;
+
+    return fetchFn(url, {
+      method: "POST",
+      ...init,
+    });
+  }
+
+  /**
    * SSE (Server-Sent Events) subscription.
    * Only works in the browser.
    */

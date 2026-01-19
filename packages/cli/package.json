@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/cli",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "type": "module",
   "description": "CLI for @donkeylabs/server - project scaffolding and code generation",
   "main": "./src/index.ts",
@@ -24,6 +24,9 @@
     "typecheck": "bun --bun tsc --noEmit"
   },
   "dependencies": {
+    "kysely": "^0.27.0",
+    "kysely-bun-sqlite": "^0.3.0",
+    "kysely-codegen": "^0.17.0",
     "picocolors": "^1.1.1",
     "prompts": "^2.4.2"
   },
@@ -32,7 +35,7 @@
     "@types/prompts": "^2.4.9"
   },
   "peerDependencies": {
-    "@donkeylabs/server": "*"
+    "@donkeylabs/server": "^0.4.0"
   },
   "keywords": [
     "cli",

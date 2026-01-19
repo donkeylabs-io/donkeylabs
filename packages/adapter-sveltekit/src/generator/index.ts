@@ -119,10 +119,19 @@ function generateTypedSvelteKitClient(routes: RouteInfo[]): string {
       .filter(r => r.handler === "typed")
       .map(r => {
         const pascalRoute = toPascalCase(r.routeName);
-        const inputType = r.inputSource ? zodToTypeScript(r.inputSource) : "Record<string, never>";
-        const outputType = r.outputSource ? zodToTypeScript(r.outputSource) : "unknown";
-        return `    export type ${pascalRoute}Input = Expand<${inputType}>;
-    export type ${pascalRoute}Output = Expand<${outputType}>;`;
+        // If inputSource starts with "z.", it's a Zod source string - convert it
+        // Otherwise it's already a TypeScript type string from getTypedMetadata()
+        const inputType = r.inputSource
+          ? (r.inputSource.trim().startsWith("z.") ? zodToTypeScript(r.inputSource) : r.inputSource)
+          : "Record<string, never>";
+        const outputType = r.outputSource
+          ? (r.outputSource.trim().startsWith("z.") ? zodToTypeScript(r.outputSource) : r.outputSource)
+          : "unknown";
+        return `    export namespace ${pascalRoute} {
+      export type Input = Expand<${inputType}>;
+      export type Output = Expand<${outputType}>;
+    }
+    export type ${pascalRoute} = { Input: ${pascalRoute}.Input; Output: ${pascalRoute}.Output };`;
       });
 
     if (typeEntries.length > 0) {
@@ -135,8 +144,8 @@ function generateTypedSvelteKitClient(routes: RouteInfo[]): string {
       .map(r => {
         const methodName = toCamelCase(r.routeName);
         const pascalRoute = toPascalCase(r.routeName);
-        const inputType = `Routes.${pascalNs}.${pascalRoute}Input`;
-        const outputType = `Routes.${pascalNs}.${pascalRoute}Output`;
+        const inputType = `Routes.${pascalNs}.${pascalRoute}.Input`;
+        const outputType = `Routes.${pascalNs}.${pascalRoute}.Output`;
         // Use original route name with prefix for the request
         const fullRouteName = commonPrefix ? `${commonPrefix}.${r.name}` : r.name;
         return `    ${methodName}: (input: ${inputType}): Promise<${outputType}> => this.request("${fullRouteName}", input)`;

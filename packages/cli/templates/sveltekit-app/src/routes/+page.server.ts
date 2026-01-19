@@ -4,13 +4,13 @@ import { createApi } from '$lib/api';
 
 export const load: PageServerLoad = async ({ locals }) => {
   // Create API client with locals for direct SSR calls (no HTTP!)
-  const api = createApi({ locals });
+  const client = createApi({ locals });
 
   try {
     // Direct service call through typed client
-    const { count } = await api.counter.get();
+    const result = await client.api.counter.get({});
     return {
-      count,
+      count: result.count,
       loadedAt: new Date().toISOString(),
       isSSR: true,
     };

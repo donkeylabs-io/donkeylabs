@@ -88,26 +88,18 @@ import { createHandle } from "@donkeylabs/adapter-sveltekit/hooks";
 export const handle = createHandle();
 ```
 
-### 4. Create the API Client
+### 4. Generate the API Client
 
-```ts
-// src/lib/api.ts
-import { UnifiedApiClientBase } from "@donkeylabs/adapter-sveltekit/client";
+Run the generator to create a fully-typed client:
 
-interface DataResponse {
-  message: string;
-}
-
-export class ApiClient extends UnifiedApiClientBase {
-  data = {
-    get: () => this.request<{}, DataResponse>("api.data.get", {}),
-  };
-}
-
-export function createApi(options?: { locals?: any }) {
-  return new ApiClient(options);
-}
+```bash
+bun run donkeylabs generate
 ```
+
+This creates `src/lib/api.ts` with:
+- Typed methods for all your routes
+- `Routes` namespace with `Input` and `Output` types
+- `createApi()` factory function
 
 ---
 
@@ -322,35 +314,72 @@ Add path aliases in `tsconfig.json`:
 
 ---
 
-## Common Patterns
+## Auto-Generated Client
 
-### Typed API Client
+When you run `donkeylabs generate`, it creates a fully-typed client at `src/lib/api.ts`.
 
-Create a fully typed client that mirrors your routes:
+### Generated Structure
 
 ```ts
-// src/lib/api.ts
-import { UnifiedApiClientBase } from "@donkeylabs/adapter-sveltekit/client";
+// src/lib/api.ts (auto-generated)
 
-// Define response types
-interface User { id: string; name: string; }
-interface UsersResponse { users: User[]; }
+// Route types - use these for forms, props, etc.
+export namespace Routes {
+  export namespace Api {
+    export namespace Users {
+      export namespace List {
+        export type Input = {};
+        export type Output = { users: User[] };
+      }
+      export namespace Create {
+        export type Input = { name: string; email: string };
+        export type Output = { id: string; name: string; email: string };
+      }
+    }
+  }
+}
 
+// API Client with typed methods
 export class ApiClient extends UnifiedApiClientBase {
-  users = {
-    list: () =>
-      this.request<{}, UsersResponse>("api.users.list", {}),
-    get: (input: { id: string }) =>
-      this.request<typeof input, User>("api.users.get", input),
-    create: (input: { name: string }) =>
-      this.request<typeof input, User>("api.users.create", input),
+  api = {
+    users: {
+      list: (input: Routes.Api.Users.List.Input): Promise<Routes.Api.Users.List.Output> => ...,
+      create: (input: Routes.Api.Users.Create.Input): Promise<Routes.Api.Users.Create.Output> => ...,
+    }
   };
 }
 
-export function createApi(options?: { locals?: any }) {
-  return new ApiClient(options);
+export function createApi(options?: ClientOptions) { ... }
+```
+
+### Using Route Types
+
+Import types for forms, validation, or props:
+
+```ts
+// In a Svelte component or server file
+import { type Routes } from '$lib/api';
+
+// Use route types
+type CreateUserInput = Routes.Api.Users.Create.Input;
+type CreateUserOutput = Routes.Api.Users.Create.Output;
+
+// Example: typed form handler
+function handleSubmit(data: CreateUserInput) {
+  api.api.users.create(data);
 }
 ```
+
+### When to Regenerate
+
+Run `donkeylabs generate` after:
+- Adding new routes
+- Changing route input/output schemas
+- Adding new plugins with routes
+
+---
+
+## Common Patterns
 
 ### Error Handling
 

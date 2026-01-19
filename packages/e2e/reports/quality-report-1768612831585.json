@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-01-17T01:20:24.378Z",
+  "overallScore": 7,
+  "checks": [
+    {
+      "name": "Handler Class Pattern",
+      "score": 10,
+      "passed": true,
+      "details": "5/5 patterns matched"
+    },
+    {
+      "name": "TypeScript Typing Quality",
+      "score": 5,
+      "passed": false,
+      "details": "2/4 type patterns found",
+      "recommendation": "Add proper TypeScript types: Array typing, Route typing"
+    },
+    {
+      "name": "Router Import Pattern",
+      "score": 10,
+      "passed": true,
+      "details": "4/4 router patterns found"
+    },
+    {
+      "name": "Template Similarity",
+      "score": 10,
+      "passed": true,
+      "details": "5/5 structural elements match template"
+    },
+    {
+      "name": "Code Documentation",
+      "score": 0,
+      "passed": false,
+      "details": "0/3 documentation patterns found",
+      "recommendation": "Add JSDoc comments to generated handlers"
+    }
+  ],
+  "recommendations": [
+    "Add proper TypeScript types: Array typing, Route typing",
+    "Add JSDoc comments to generated handlers"
+  ],
+  "mcpImprovements": [
+    "Improve type generation in add_route: Array typing, Route typing",
+    "Add JSDoc documentation generation to add_route tool"
+  ]
+}

@@ -61,8 +61,8 @@ const router = createRouter("users")
 
       expect(generatedClient).toContain("export namespace Routes");
       expect(generatedClient).toContain("export namespace Users");
-      expect(generatedClient).toContain("GetInput");
-      expect(generatedClient).toContain("GetOutput");
+      expect(generatedClient).toContain("export type Input");
+      expect(generatedClient).toContain("export type Output");
       expect(generatedClient).toContain("id: number");
       expect(generatedClient).toContain("name: string");
     });
@@ -457,6 +457,55 @@ const router = createRouter("api")
       expect(output).toContain("Usage:");
       expect(output).toContain("--output");
       expect(output).toContain("--name");
+    });
+    it("should generate deep nested structure for recursive routers", async () => {
+      const serverContent = `
+import { createRouter } from "./router";
+import { z } from "zod";
+
+const router = createRouter("api");
+const v1 = createRouter("api.v1");
+const users = createRouter("api.v1.users");
+
+users.route("get").typed({
+  input: z.object({ id: z.string() }),
+  output: z.object({ name: z.string() }),
+  handle: async () => ({ name: "User" }),
+});
+`;
+      const serverFile = join(TEST_DIR, "recursive.ts");
+      await writeFile(serverFile, serverContent);
+
+      await Bun.spawn([
+        "bun",
+        join(SCRIPTS_DIR, "generate-client.ts"),
+        "--output",
+        join(TEST_DIR, "recursive-output"),
+        serverFile,
+      ], {
+        cwd: PACKAGE_ROOT,
+      }).exited;
+
+      const generatedClient = await readFile(
+        join(TEST_DIR, "recursive-output", "index.ts"),
+        "utf-8"
+      );
+
+      // Verify Types - should correspond to nesting
+      // Note: Namespace declaration might be multiline, so checking parts
+      expect(generatedClient).toContain("export namespace Routes");
+      expect(generatedClient).toContain("export namespace Api");
+      expect(generatedClient).toContain("export namespace V1");
+      expect(generatedClient).toContain("export namespace Users"); 
+      
+      // Verify Client Method Nesting
+      // Top level property
+      expect(generatedClient).toContain("api = {");
+      // Nested properties use colon
+      expect(generatedClient).toContain("v1: {");
+      expect(generatedClient).toContain("users: {");
+      // Method signature
+      expect(generatedClient).toContain("get: (input: Routes.Api.V1.Users.Get.Input, options?: RequestOptions)");
     });
   });
 });

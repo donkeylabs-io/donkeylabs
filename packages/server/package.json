@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/server",
-  "version": "0.3.1",
+  "version": "0.6.0",
   "type": "module",
   "description": "Type-safe plugin system for building RPC-style APIs with Bun",
   "main": "./src/index.ts",
@@ -30,6 +30,8 @@
   "files": [
     "src",
     "docs",
+    "examples",
+    "CLAUDE.md",
     "context.d.ts",
     "registry.d.ts",
     "LICENSE",

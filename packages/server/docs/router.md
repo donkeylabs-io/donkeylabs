@@ -304,6 +304,99 @@ router.route("getUser").typed({
 
 ---
 
+## Type Generation
+
+When using `donkeylabs generate` to create a typed API client, **you must provide explicit `output` schemas if your route returns data**.
+
+### Output Schema Rules
+
+- **No `output` schema** → Generated type is `void` (handler should return nothing)
+- **With `output` schema** → Generated type matches the schema
+
+This enforces explicitness: if you want to return data, you must declare what you're returning.
+
+**Without `output` schema (returns void):**
+```ts
+// Handler should NOT return anything
+router.route("delete").typed({
+  input: z.object({ id: z.string() }),
+  handle: async (input, ctx) => {
+    await ctx.plugins.recordings.delete(input.id);
+    // No return - this is correct for void output
+  },
+});
+```
+
+**With `output` schema (returns data):**
+```ts
+// ✅ Generated type will be: Output = Expand<{ recordings: Recording[]; total: number; }>
+router.route("list").typed({
+  input: z.object({ page: z.number() }),
+  output: z.object({
+    recordings: z.array(RecordingSchema),
+    total: z.number(),
+  }),
+  handle: async (input, ctx) => {
+    return ctx.plugins.recordings.list(input);
+  },
+});
+```
+
+### Best Practice: Always Define Output Schemas
+
+For proper type safety in generated clients:
+
+1. **Define Zod schemas for outputs**:
+```ts
+// schemas.ts
+export const RecordingSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  duration: z.number(),
+  createdAt: z.string(),
+});
+
+export const RecordingListOutput = z.object({
+  recordings: z.array(RecordingSchema),
+  total: z.number(),
+  page: z.number(),
+});
+```
+
+2. **Use them in routes**:
+```ts
+import { RecordingListOutput } from "./schemas";
+
+router.route("list").typed({
+  input: z.object({ page: z.number().default(1) }),
+  output: RecordingListOutput,
+  handle: async (input, ctx) => {
+    return ctx.plugins.recordings.list(input);
+  },
+});
+```
+
+3. **Run type generation**:
+```bash
+donkeylabs generate
+```
+
+The generated client will have properly typed methods:
+```ts
+// Generated API client
+api.recordings.list({ page: 1 })  // Returns Promise<{ recordings: Recording[]; total: number; page: number; }>
+```
+
+### Debugging Missing Types
+
+If your generated client shows `Output = Expand<void>` but your handler returns data:
+
+1. Add an explicit `output` Zod schema that matches your return type
+2. Run `donkeylabs generate` to regenerate the client
+3. Check the warning logs - routes without output schemas are listed
+
+---
+
 ## Real-World Examples
 
 ### CRUD Operations

@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { PluginManager, type CoreServices, type ConfiguredPlugin } from "./core";
 import { type IRouter, type RouteDefinition, type ServerContext } from "./router";
 import { Handlers } from "./handlers";
@@ -12,6 +14,8 @@ import {
   createSSE,
   createRateLimiter,
   createErrors,
+  createWorkflows,
+  createProcesses,
   extractClientIP,
   HttpError,
   type LoggerConfig,
@@ -22,12 +26,32 @@ import {
   type SSEConfig,
   type RateLimiterConfig,
   type ErrorsConfig,
+  type WorkflowsConfig,
+  type ProcessesConfig,
 } from "./core/index";
+import { zodSchemaToTs } from "./generator/zod-to-ts";
+
+export interface TypeGenerationConfig {
+  /** Output path for generated client types (e.g., "./src/lib/api.ts") */
+  output: string;
+  /** Custom base import for the client */
+  baseImport?: string;
+  /** Custom base class name */
+  baseClass?: string;
+  /** Constructor signature (e.g., "baseUrl: string, options?: ApiClientOptions") */
+  constructorSignature?: string;
+  /** Constructor body (e.g., "super(baseUrl, options);") */
+  constructorBody?: string;
+  /** Factory function code (optional, replaces default createApi) */
+  factoryFunction?: string;
+}
 
 export interface ServerConfig {
   port?: number;
   db: CoreServices["db"];
   config?: Record<string, any>;
+  /** Auto-generate client types on startup in dev mode */
+  generateTypes?: TypeGenerationConfig;
   // Core service configurations
   logger?: LoggerConfig;
   cache?: CacheConfig;
@@ -37,6 +61,8 @@ export interface ServerConfig {
   sse?: SSEConfig;
   rateLimiter?: RateLimiterConfig;
   errors?: ErrorsConfig;
+  workflows?: WorkflowsConfig;
+  processes?: ProcessesConfig;
 }
 
 export class AppServer {
@@ -45,6 +71,7 @@ export class AppServer {
   private routers: IRouter[] = [];
   private routeMap: Map<string, RouteDefinition> = new Map();
   private coreServices: CoreServices;
+  private typeGenConfig?: TypeGenerationConfig;
 
   constructor(options: ServerConfig) {
     this.port = options.port ?? 3000;
@@ -58,6 +85,16 @@ export class AppServer {
     const sse = createSSE(options.sse);
     const rateLimiter = createRateLimiter(options.rateLimiter);
     const errors = createErrors(options.errors);
+    const workflows = createWorkflows({
+      ...options.workflows,
+      events,
+      jobs,
+      sse,
+    });
+    const processes = createProcesses({
+      ...options.processes,
+      events,
+    });
 
     this.coreServices = {
       db: options.db,
@@ -70,9 +107,12 @@ export class AppServer {
       sse,
       rateLimiter,
       errors,
+      workflows,
+      processes,
     };
 
     this.manager = new PluginManager(this.coreServices);
+    this.typeGenConfig = options.generateTypes;
   }
 
   /**
@@ -170,18 +210,282 @@ export class AppServer {
   }
 
   /**
+   * Generate client types from registered routes.
+   * Called automatically on startup in dev mode if generateTypes config is provided.
+   */
+  private async generateTypes(): Promise<void> {
+    if (!this.typeGenConfig) return;
+
+    const { logger } = this.coreServices;
+    const isDev = process.env.NODE_ENV !== "production";
+
+    if (!isDev) {
+      logger.debug("Skipping type generation in production mode");
+      return;
+    }
+
+    // Collect all route metadata
+    const routes: Array<{
+      name: string;
+      prefix: string;
+      routeName: string;
+      handler: "typed" | "raw";
+      inputSource?: string;
+      outputSource?: string;
+    }> = [];
+
+    const routesWithoutOutput: string[] = [];
+
+    for (const router of this.routers) {
+      for (const route of router.getRoutes()) {
+        const parts = route.name.split(".");
+        const routeName = parts[parts.length - 1] || route.name;
+        const prefix = parts.slice(0, -1).join(".");
+
+        // Track typed routes without explicit output schema
+        if (route.handler === "typed" && !route.output) {
+          routesWithoutOutput.push(route.name);
+        }
+
+        routes.push({
+          name: route.name,
+          prefix,
+          routeName,
+          handler: (route.handler || "typed") as "typed" | "raw",
+          inputSource: route.input ? zodSchemaToTs(route.input) : undefined,
+          outputSource: route.output ? zodSchemaToTs(route.output) : undefined,
+        });
+      }
+    }
+
+    // Warn about routes missing output schemas
+    if (routesWithoutOutput.length > 0) {
+      logger.warn(
+        `${routesWithoutOutput.length} route(s) missing output schema - output type will be 'void'`,
+        { routes: routesWithoutOutput }
+      );
+      logger.debug(
+        "Tip: Add an 'output' Zod schema to define the return type, or ensure handlers return nothing"
+      );
+    }
+
+    // Generate the client code
+    const code = this.generateClientCode(routes);
+
+    // Write to output file
+    const outputDir = dirname(this.typeGenConfig.output);
+    await mkdir(outputDir, { recursive: true });
+    await writeFile(this.typeGenConfig.output, code);
+
+    logger.info(`Generated API client types`, { output: this.typeGenConfig.output, routes: routes.length });
+  }
+
+  /**
+   * Generate client code from route metadata.
+   */
+  private generateClientCode(
+    routes: Array<{
+      name: string;
+      prefix: string;
+      routeName: string;
+      handler: "typed" | "raw";
+      inputSource?: string;
+      outputSource?: string;
+    }>
+  ): string {
+    const baseImport =
+      this.typeGenConfig?.baseImport ??
+      'import { UnifiedApiClientBase, type ClientOptions } from "@donkeylabs/adapter-sveltekit/client";';
+    const baseClass = this.typeGenConfig?.baseClass ?? "UnifiedApiClientBase";
+    const constructorSignature =
+      this.typeGenConfig?.constructorSignature ?? "options?: ClientOptions";
+    const constructorBody =
+      this.typeGenConfig?.constructorBody ?? "super(options);";
+    const defaultFactory = `/**
+ * Create an API client instance
+ */
+export function createApi(options?: ClientOptions) {
+  return new ApiClient(options);
+}`;
+    const factoryFunction = this.typeGenConfig?.factoryFunction ?? defaultFactory;
+
+    // Helper functions
+    const toPascalCase = (str: string): string =>
+      str
+        .split(/[._-]/)
+        .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+        .join("");
+
+    const toCamelCase = (str: string): string => {
+      const pascal = toPascalCase(str);
+      return pascal.charAt(0).toLowerCase() + pascal.slice(1);
+    };
+
+    // Common prefix stripping is disabled to respect explicit router nesting (e.g. api.health)
+    const routesToProcess = routes;
+    const commonPrefix = "";
+
+    // Build recursive tree for nested routes
+    type RouteNode = {
+      children: Map<string, RouteNode>;
+      routes: typeof routes;
+    };
+    const rootNode: RouteNode = { children: new Map(), routes: [] };
+
+    for (const route of routesToProcess) {
+      const parts = route.name.split(".");
+      let currentNode = rootNode;
+      // Navigate/Build tree
+      for (let i = 0; i < parts.length - 1; i++) {
+        const part = parts[i]!;
+        if (!currentNode.children.has(part)) {
+          currentNode.children.set(part, { children: new Map(), routes: [] });
+        }
+        currentNode = currentNode.children.get(part)!;
+      }
+      // Add route to the leaf node (last part is the method name)
+      currentNode.routes.push({
+        ...route,
+        routeName: parts[parts.length - 1]! // precise method name
+      });
+    }
+
+    // Recursive function to generate Type definitions
+    function generateTypeBlock(node: RouteNode, indent: string): string {
+      const blocks: string[] = [];
+      
+      // 1. Valid Input/Output types for routes at this level
+      if (node.routes.length > 0) {
+        const routeTypes = node.routes.map(r => {
+           if (r.handler !== "typed") return "";
+           const routeNs = toPascalCase(r.routeName);
+           const inputType = r.inputSource ?? "Record<string, never>";
+           const outputType = r.outputSource ?? "void";
+           return `${indent}export namespace ${routeNs} {
+${indent}  export type Input = Expand<${inputType}>;
+${indent}  export type Output = Expand<${outputType}>;
+${indent}}
+${indent}export type ${routeNs} = { Input: ${routeNs}.Input; Output: ${routeNs}.Output };`;
+        }).filter(Boolean);
+        if (routeTypes.length) blocks.push(routeTypes.join("\n\n"));
+      }
+
+      // 2. Nested namespaces
+      for (const [name, child] of node.children) {
+        const nsName = toPascalCase(name);
+        blocks.push(`${indent}export namespace ${nsName} {\n${generateTypeBlock(child, indent + "  ")}\n${indent}}`);
+      }
+      return blocks.join("\n\n");
+    }
+
+    // Recursive function to generate Client Methods
+    function generateMethodBlock(node: RouteNode, indent: string, parentPath: string, isTopLevel: boolean): string {
+      const blocks: string[] = [];
+
+      // 1. Methods at this level
+      const methods = node.routes.map(r => {
+         const methodName = toCamelCase(r.routeName);
+         // r.name is the full path e.g. "api.v1.users.get"
+         
+         if (r.handler === "typed") {
+            const pathParts = r.name.split(".");
+            const typePath = ["Routes", ...pathParts.slice(0, -1).map(toPascalCase), toPascalCase(r.routeName)];
+            const inputType = typePath.join(".") + ".Input";
+            const outputType = typePath.join(".") + ".Output";
+            
+            return `${indent}${methodName}: (input: ${inputType}): Promise<${outputType}> => this.request("${r.name}", input)`;
+         } else {
+            return `${indent}${methodName}: (init?: RequestInit): Promise<Response> => this.rawRequest("${r.name}", init)`;
+         }
+      });
+      if (methods.length) blocks.push(methods.join(",\n"));
+
+      // 2. Nested Objects
+      for (const [name, child] of node.children) {
+         const camelName = toCamelCase(name); 
+         const separator = isTopLevel ? " = " : ": ";
+         const terminator = isTopLevel ? ";" : "";
+         // For top level, we output `name = { ... };` 
+         // For nested, we output `name: { ... }` (comma handled by join)
+         
+         blocks.push(`${indent}${camelName}${separator}{\n${generateMethodBlock(child, indent + "  ", "", false)}\n${indent}}${terminator}`);
+      }
+      // Top level blocks are separated by nothing (class members). Nested by comma.
+      // Wait, blocks.join needs care.
+      // If isTopLevel, join with "\n\n". If nested, join with ",\n".
+      return blocks.join(isTopLevel ? "\n\n" : ",\n");
+    }
+
+    const typeBlocks: string[] = [generateTypeBlock(rootNode, "  ")];
+    // rootNode children are top-level namespaces (api, health) -> Top Level Class Properties
+    const methodBlocks: string[] = [generateMethodBlock(rootNode, "  ", "", true)];
+
+    return `// Auto-generated by @donkeylabs/server
+// DO NOT EDIT MANUALLY
+
+${baseImport}
+
+// Utility type that forces TypeScript to expand types on hover
+type Expand<T> = T extends infer O ? { [K in keyof O]: O[K] } : never;
+
+/**
+ * Handler interface for implementing route handlers in model classes.
+ * @example
+ * class CounterModel implements Handler<Routes.Counter.get> {
+ *   handle(input: Routes.Counter.get.Input): Routes.Counter.get.Output {
+ *     return { count: 0 };
+ *   }
+ * }
+ */
+export interface Handler<T extends { Input: any; Output: any }> {
+  handle(input: T["Input"]): T["Output"] | Promise<T["Output"]>;
+}
+
+// Re-export server context for model classes
+export { type ServerContext as AppContext } from "@donkeylabs/server";
+
+// ============================================
+// Route Types
+// ============================================
+
+export namespace Routes {
+${typeBlocks.join("\n\n") || "  // No typed routes found"}
+}
+
+// ============================================
+// API Client
+// ============================================
+
+export class ApiClient extends ${baseClass} {
+  constructor(${constructorSignature}) {
+    ${constructorBody}
+  }
+
+${methodBlocks.join("\n\n") || "  // No routes defined"}
+}
+
+${factoryFunction}
+`;
+  }
+
+  /**
    * Initialize server without starting HTTP server.
    * Used by adapters (e.g., SvelteKit) that manage their own HTTP server.
    */
   async initialize(): Promise<void> {
     const { logger } = this.coreServices;
 
+    // Auto-generate types in dev mode if configured
+    await this.generateTypes();
+
     await this.manager.migrate();
     await this.manager.init();
 
     this.coreServices.cron.start();
     this.coreServices.jobs.start();
-    logger.info("Background services started (cron, jobs)");
+    await this.coreServices.workflows.resume();
+    this.coreServices.processes.start();
+    logger.info("Background services started (cron, jobs, workflows, processes)");
 
     for (const router of this.routers) {
       for (const route of router.getRoutes()) {
@@ -387,6 +691,9 @@ export class AppServer {
   async start() {
     const { logger } = this.coreServices;
 
+    // Auto-generate types in dev mode if configured
+    await this.generateTypes();
+
     // 1. Run migrations
     await this.manager.migrate();
 
@@ -396,7 +703,9 @@ export class AppServer {
     // 3. Start background services
     this.coreServices.cron.start();
     this.coreServices.jobs.start();
-    logger.info("Background services started (cron, jobs)");
+    await this.coreServices.workflows.resume();
+    this.coreServices.processes.start();
+    logger.info("Background services started (cron, jobs, workflows, processes)");
 
     // 4. Build route map
     for (const router of this.routers) {
@@ -536,6 +845,8 @@ export class AppServer {
     this.coreServices.sse.shutdown();
 
     // Stop background services
+    await this.coreServices.processes.shutdown();
+    await this.coreServices.workflows.stop();
     await this.coreServices.jobs.stop();
     await this.coreServices.cron.stop();
 

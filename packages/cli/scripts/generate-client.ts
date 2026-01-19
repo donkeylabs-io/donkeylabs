@@ -466,20 +466,101 @@ function splitTopLevel(source: string, delimiter: string): string[] {
 }
 
 /**
- * Group routes by prefix
+ * Build recursive route tree
  */
-function groupRoutesByPrefix(routes: RouteInfo[]): Map<string, RouteInfo[]> {
-  const groups = new Map<string, RouteInfo[]>();
+type RouteNode = {
+  children: Map<string, RouteNode>;
+  routes: RouteInfo[];
+};
+
+function buildRouteTree(routes: RouteInfo[]): RouteNode {
+  const rootNode: RouteNode = { children: new Map(), routes: [] };
 
   for (const route of routes) {
-    const prefix = route.prefix || "_root";
-    if (!groups.has(prefix)) {
-      groups.set(prefix, []);
+    const parts = route.name.split(".");
+    let currentNode = rootNode;
+    // Navigate/Build tree
+    for (let i = 0; i < parts.length - 1; i++) {
+      const part = parts[i]!;
+      if (!currentNode.children.has(part)) {
+        currentNode.children.set(part, { children: new Map(), routes: [] });
+      }
+      currentNode = currentNode.children.get(part)!;
     }
-    groups.get(prefix)!.push(route);
+    // Add route to the leaf node
+    currentNode.routes.push({
+      ...route,
+      routeName: parts[parts.length - 1]! 
+    });
+  }
+  return rootNode;
+}
+
+/**
+ * Recursive function to generate Type definitions
+ */
+function generateTypeBlock(node: RouteNode, indent: string): string {
+  const blocks: string[] = [];
+  
+  // 1. Valid Input/Output types for routes at this level
+  if (node.routes.length > 0) {
+    const routeTypes = node.routes.map(r => {
+       if (r.handler !== "typed") return "";
+       const routeNs = toPascalCase(r.routeName);
+       const inputType = zodToTypeScript(r.inputSource ?? "z.any()") || "any";
+       const outputType = zodToTypeScript(r.outputSource ?? "z.any()") || "any";
+       return `${indent}export namespace ${routeNs} {
+${indent}  export type Input = Expand<${inputType}>;
+${indent}  export type Output = Expand<${outputType}>;
+${indent}}
+${indent}export type ${routeNs} = { Input: ${routeNs}.Input; Output: ${routeNs}.Output };`;
+    }).filter(Boolean);
+    if (routeTypes.length) blocks.push(routeTypes.join("\n\n"));
   }
 
-  return groups;
+  // 2. Nested namespaces
+  for (const [name, child] of node.children) {
+    const nsName = toPascalCase(name);
+    blocks.push(`${indent}export namespace ${nsName} {\n${generateTypeBlock(child, indent + "  ")}\n${indent}}`);
+  }
+  return blocks.join("\n\n");
+}
+
+/**
+ * Recursive function to generate Client Methods
+ */
+function generateMethodBlock(node: RouteNode, indent: string, parentPath: string, isTopLevel: boolean): string {
+  const blocks: string[] = [];
+
+  // 1. Methods at this level
+  const methods = node.routes.map(r => {
+     const methodName = toCamelCase(r.routeName);
+     
+     if (r.handler === "typed") {
+        const pathParts = r.name.split(".");
+        const typePath = ["Routes", ...pathParts.slice(0, -1).map(toPascalCase), toPascalCase(r.routeName)];
+        const inputType = typePath.join(".") + ".Input";
+        const outputType = typePath.join(".") + ".Output";
+        
+        return `${indent}${methodName}: (input: ${inputType}, options?: RequestOptions): Promise<${outputType}> =>
+${indent}  this.request("${r.name}", input, options)`;
+     } else {
+        return `${indent}${methodName}: (init?: RequestInit): Promise<Response> =>
+${indent}  this.rawRequest("${r.name}", init)`;
+     }
+  });
+  if (methods.length) blocks.push(methods.join(",\n\n"));
+
+  // 2. Nested Objects
+  for (const [name, child] of node.children) {
+     const camelName = toCamelCase(name); 
+     const separator = isTopLevel ? " = " : ": ";
+     const terminator = isTopLevel ? ";" : "";
+     
+     blocks.push(`${indent}${camelName}${separator}{\n${generateMethodBlock(child, indent + "  ", "", false)}\n${indent}}${terminator}`);
+  }
+  
+  return blocks.join(isTopLevel ? "\n\n" : ",\n\n");
 }
 
 /**
@@ -492,63 +573,16 @@ function generateClientCode(ctx: GenerationContext): string {
   const defaultCredentials =
     clientConfigs.find((c) => c.credentials)?.credentials || "include";
 
-  // Group routes by prefix
-  const routeGroups = groupRoutesByPrefix(routes);
+  // Build Route Tree
+  const rootNode = buildRouteTree(routes);
 
-  // Generate route type definitions
-  const routeTypeBlocks: string[] = [];
-  const routeNamespaceBlocks: string[] = [];
-
-  for (const [prefix, prefixRoutes] of routeGroups) {
-    const namespaceName = prefix === "_root" ? "Root" : toPascalCase(prefix);
-    const methodName = prefix === "_root" ? "_root" : prefix;
-
-    // Generate type namespace
-    const typeEntries = prefixRoutes
-      .filter((r) => r.handler === "typed")
-      .map((r) => {
-        const inputType = zodToTypeScript(r.inputSource);
-        const outputType = zodToTypeScript(r.outputSource);
-        return `    export type ${toPascalCase(r.routeName)}Input = ${inputType};
-    export type ${toPascalCase(r.routeName)}Output = ${outputType};`;
-      });
-
-    if (typeEntries.length > 0) {
-      routeTypeBlocks.push(`  export namespace ${namespaceName} {
-${typeEntries.join("\n\n")}
-  }`);
-    }
-
-    // Generate route methods
-    const methodEntries = prefixRoutes
-      .filter((r) => r.handler === "typed")
-      .map((r) => {
-        const inputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}Input`;
-        const outputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}Output`;
-        return `    ${toCamelCase(r.routeName)}: (input: ${inputType}, options?: RequestOptions): Promise<${outputType}> =>
-      this.request("${r.name}", input, options)`;
-      });
-
-    // Add raw routes as methods returning Response
-    const rawMethodEntries = prefixRoutes
-      .filter((r) => r.handler === "raw")
-      .map((r) => {
-        return `    ${toCamelCase(r.routeName)}: (init?: RequestInit): Promise<Response> =>
-      this.rawRequest("${r.name}", init)`;
-      });
-
-    const allMethods = [...methodEntries, ...rawMethodEntries];
-
-    if (allMethods.length > 0) {
-      routeNamespaceBlocks.push(`  ${methodName} = {
-${allMethods.join(",\n\n")}
-  };`);
-    }
-  }
+  // Generate Blocks
+  const routeTypeBlocks = generateTypeBlock(rootNode, "  ");
+  const routeNamespaceBlocks = generateMethodBlock(rootNode, "  ", "", true);
 
   // Generate event types
   const eventTypeEntries = events.map((e) => {
-    const type = zodToTypeScript(e.schemaSource);
+    const type = zodToTypeScript(e.schemaSource); // Assuming this helper exists globally in file
     return `  "${e.name}": ${type};`;
   });
 
@@ -572,12 +606,15 @@ import {
   type SSEOptions,
 } from "./base";
 
+// Utility type that forces TypeScript to expand types on hover
+type Expand<T> = T extends infer O ? { [K in keyof O]: O[K] } : never;
+
 // ============================================
 // Route Types
 // ============================================
 
 export namespace Routes {
-${routeTypeBlocks.join("\n\n") || "  // No typed routes found"}
+${routeTypeBlocks || "  // No typed routes found"}
 }
 
 // ============================================
@@ -624,7 +661,7 @@ export class ApiClient extends ApiClientBase<SSEEvents> {
   // Route Namespaces
   // ==========================================
 
-${routeNamespaceBlocks.join("\n\n") || "  // No routes defined"}
+${routeNamespaceBlocks || "  // No routes defined"}
 }
 
 // ============================================
@@ -815,14 +852,26 @@ async function main() {
   await writeFile(outputPath, clientCode);
   console.log(`Generated: ${relative(process.cwd(), outputPath)}`);
 
-  // Copy base.ts if not already in output directory
+  // Copy base.ts
   const basePath = join(outputDir, "base.ts");
-  const sourceBasePath = join(process.cwd(), "src/client", "base.ts");
+  // Resolve base.ts relative to this script
+  const scriptDir = import.meta.dir;
+  const sourceBasePath = join(scriptDir, "../src/client/base.ts");
 
-  if (existsSync(sourceBasePath) && outputDir !== join(process.cwd(), "client")) {
+  if (await Bun.file(sourceBasePath).exists()) {
     const baseContent = await readFile(sourceBasePath, "utf-8");
     await writeFile(basePath, baseContent);
-    console.log(`Copied: ${relative(process.cwd(), basePath)}`);
+    console.log(`Generated: ${relative(process.cwd(), basePath)}`);
+  } else {
+    // Fallback for when running from compiled/different structure, try local project src/client
+    const localSource = join(process.cwd(), "src/client/base.ts");
+    if (await Bun.file(localSource).exists()) {
+        const baseContent = await readFile(localSource, "utf-8");
+        await writeFile(basePath, baseContent);
+        console.log(`Generated: ${relative(process.cwd(), basePath)}`);
+    } else {
+        throw new Error(`Could not find base.ts at ${sourceBasePath} or ${localSource}`);
+    }
   }
 
   console.log(`

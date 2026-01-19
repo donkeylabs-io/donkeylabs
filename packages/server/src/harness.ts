@@ -11,6 +11,8 @@ import {
   createSSE,
   createRateLimiter,
   createErrors,
+  createWorkflows,
+  createProcesses,
 } from "./core/index";
 
 /**
@@ -34,6 +36,8 @@ export async function createTestHarness(targetPlugin: Plugin, dependencies: Plug
   const sse = createSSE();
   const rateLimiter = createRateLimiter();
   const errors = createErrors();
+  const workflows = createWorkflows({ events, jobs, sse });
+  const processes = createProcesses({ events, autoRecoverOrphans: false });
 
   const core: CoreServices = {
     db,
@@ -46,6 +50,8 @@ export async function createTestHarness(targetPlugin: Plugin, dependencies: Plug
     sse,
     rateLimiter,
     errors,
+    workflows,
+    processes,
   };
 
   const manager = new PluginManager(core);

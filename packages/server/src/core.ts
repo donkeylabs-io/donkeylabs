@@ -1,4 +1,4 @@
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { z } from "zod";
@@ -10,6 +10,8 @@ import type { Jobs } from "./core/jobs";
 import type { SSE } from "./core/sse";
 import type { RateLimiter } from "./core/rate-limiter";
 import type { Errors, CustomErrorRegistry } from "./core/errors";
+import type { Workflows } from "./core/workflows";
+import type { Processes } from "./core/processes";
 
 export interface PluginRegistry {}
 
@@ -52,6 +54,8 @@ export interface CoreServices {
   sse: SSE;
   rateLimiter: RateLimiter;
   errors: Errors;
+  workflows: Workflows;
+  processes: Processes;
 }
 
 /**
@@ -353,16 +357,65 @@ export class PluginManager {
     this.plugins.set(plugin.name, plugin);
   }
 
+  /**
+   * Ensures the migrations tracking table exists.
+   * This table tracks which migrations have been applied for each plugin.
+   */
+  private async ensureMigrationsTable(): Promise<void> {
+    await this.core.db.schema
+      .createTable("__donkeylabs_migrations__")
+      .ifNotExists()
+      .addColumn("id", "integer", (col) => col.primaryKey().autoIncrement())
+      .addColumn("plugin_name", "text", (col) => col.notNull())
+      .addColumn("migration_name", "text", (col) => col.notNull())
+      .addColumn("executed_at", "text", (col) => col.defaultTo(sql`CURRENT_TIMESTAMP`))
+      .execute();
+
+    // Create unique index for plugin_name + migration_name (if not exists)
+    // Using raw SQL since Kysely doesn't have ifNotExists for indexes
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_unique
+              ON __donkeylabs_migrations__(plugin_name, migration_name)`.execute(this.core.db);
+  }
+
+  /**
+   * Checks if a migration has already been applied for a specific plugin.
+   */
+  private async isMigrationApplied(pluginName: string, migrationName: string): Promise<boolean> {
+    const result = await sql<{ count: number }>`
+      SELECT COUNT(*) as count FROM __donkeylabs_migrations__
+      WHERE plugin_name = ${pluginName} AND migration_name = ${migrationName}
+    `.execute(this.core.db);
+    return (result.rows[0]?.count ?? 0) > 0;
+  }
+
+  /**
+   * Records that a migration has been applied for a specific plugin.
+   */
+  private async recordMigration(pluginName: string, migrationName: string): Promise<void> {
+    await sql`
+      INSERT INTO __donkeylabs_migrations__ (plugin_name, migration_name)
+      VALUES (${pluginName}, ${migrationName})
+    `.execute(this.core.db);
+  }
+
   async migrate(): Promise<void> {
     console.log("Running migrations (File-System Based)...");
+
+    // Ensure the migrations tracking table exists
+    await this.ensureMigrationsTable();
+
     const sortedPlugins = this.resolveOrder();
 
     for (const plugin of sortedPlugins) {
         const pluginName = plugin.name;
         const possibleMigrationDirs = [
-          join(process.cwd(), "examples/basic-server/src/plugins", pluginName, "migrations"),
+          // SvelteKit adapter location
+          join(process.cwd(), "src/server/plugins", pluginName, "migrations"),
+          // Standard locations
           join(process.cwd(), "src/plugins", pluginName, "migrations"),
           join(process.cwd(), "plugins", pluginName, "migrations"),
+          // Legacy/example location
+          join(process.cwd(), "examples/basic-server/src/plugins", pluginName, "migrations"),
         ];
 
         let migrationDir = "";
@@ -386,22 +439,46 @@ export class PluginManager {
                  console.log(`[Migration] checking plugin: ${pluginName} at ${migrationDir}`);
 
                  for (const file of migrationFiles.sort()) {
+                     // Check if this migration has already been applied
+                     const isApplied = await this.isMigrationApplied(pluginName, file);
+                     if (isApplied) {
+                         console.log(`  - Skipping (already applied): ${file}`);
+                         continue;
+                     }
+
                      console.log(`  - Executing migration: ${file}`);
                      const migrationPath = join(migrationDir, file);
-                     const migration = await import(migrationPath);
+
+                     let migration;
+                     try {
+                         migration = await import(migrationPath);
+                     } catch (importError) {
+                         const err = importError instanceof Error ? importError : new Error(String(importError));
+                         throw new Error(`Failed to import migration ${file}: ${err.message}`);
+                     }
 
                      if (migration.up) {
                          try {
                               await migration.up(this.core.db);
+                              // Record successful migration
+                              await this.recordMigration(pluginName, file);
                               console.log(`    Success`);
                          } catch (e) {
                              console.error(`    Failed to run ${file}:`, e);
+                             throw e; // Stop on migration failure - don't continue with inconsistent state
                          }
                      }
                  }
              }
-        } catch {
-            // Migration directory doesn't exist, skip
+        } catch (e) {
+            // Re-throw migration execution errors (they've already been logged)
+            // Only silently catch directory read errors (ENOENT)
+            const isDirectoryError = e instanceof Error &&
+              ((e as NodeJS.ErrnoException).code === 'ENOENT' ||
+               (e as NodeJS.ErrnoException).code === 'ENOTDIR');
+            if (!isDirectoryError) {
+                throw e;
+            }
         }
     }
   }

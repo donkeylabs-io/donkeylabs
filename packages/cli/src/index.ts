@@ -35,6 +35,7 @@ ${pc.bold("Commands:")}
   ${pc.cyan("init")}         Initialize a new project
   ${pc.cyan("generate")}     Generate types (registry, context, client)
   ${pc.cyan("plugin")}       Plugin management
+  ${pc.cyan("mcp")}          Setup MCP server for AI-assisted development
 
 ${pc.bold("Options:")}
   -h, --help              Show this help message
@@ -93,6 +94,11 @@ async function main() {
     case "plugin":
       const { pluginCommand } = await import("./commands/plugin");
       await pluginCommand(positionals.slice(1));
+      break;
+
+    case "mcp":
+      const { mcpCommand } = await import("./commands/mcp");
+      await mcpCommand(positionals.slice(1));
       break;
 
     default:

@@ -48,6 +48,36 @@ export {
 } from "./jobs";
 
 export {
+  SqliteJobAdapter,
+  type SqliteJobAdapterConfig,
+} from "./job-adapter-sqlite";
+
+export {
+  type ExternalJobConfig,
+  type ExternalJob,
+  type ExternalJobProcessState,
+  type ExternalJobsConfig,
+  type ExternalJobManager,
+  type ExternalJobMessage,
+  type ExternalJobMessageType,
+  type AnyExternalJobMessage,
+  type StartedMessage,
+  type ProgressMessage,
+  type HeartbeatMessage,
+  type LogMessage,
+  type CompletedMessage,
+  type FailedMessage,
+  isExternalJob,
+  isProgressMessage,
+  isHeartbeatMessage,
+  isLogMessage,
+  isCompletedMessage,
+  isFailedMessage,
+  isStartedMessage,
+  isProcessAlive,
+} from "./external-jobs";
+
+export {
   type SSE,
   type SSEClient,
   type SSEConfig,
@@ -92,3 +122,51 @@ export {
   createErrors,
   createValidationError,
 } from "./errors";
+
+export {
+  type Workflows,
+  type WorkflowsConfig,
+  type WorkflowDefinition,
+  type WorkflowInstance,
+  type WorkflowStatus,
+  type WorkflowContext,
+  type WorkflowAdapter,
+  type StepDefinition,
+  type StepType,
+  type StepStatus,
+  type StepResult,
+  type TaskStepDefinition,
+  type ParallelStepDefinition,
+  type ChoiceStepDefinition,
+  type ChoiceCondition,
+  type PassStepDefinition,
+  type RetryConfig,
+  WorkflowBuilder,
+  MemoryWorkflowAdapter,
+  workflow,
+  createWorkflows,
+} from "./workflows";
+
+export {
+  type Processes,
+  type ProcessesConfig,
+  type ProcessStatus,
+  type ProcessConfig,
+  type ProcessDefinition,
+  type ManagedProcess,
+  type SpawnOptions,
+  createProcesses,
+} from "./processes";
+
+export {
+  SqliteProcessAdapter,
+  type SqliteProcessAdapterConfig,
+  type ProcessAdapter,
+} from "./process-adapter-sqlite";
+
+export {
+  type ProcessSocketServer,
+  type ProcessMessage,
+  type ProcessSocketConfig,
+  createProcessSocketServer,
+} from "./process-socket";

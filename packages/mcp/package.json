@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/mcp",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "description": "MCP server for AI-assisted development with @donkeylabs/server",
   "type": "module",
   "main": "./src/server.ts",
@@ -26,11 +26,15 @@
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.9",
+    "@anthropic-ai/claude-code": "^2.1.9",
+    "@anthropic-ai/sdk": "^0.71.2",
     "bun-types": "latest",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "zod": "^4.3.5"
   },
   "peerDependencies": {
-    "@donkeylabs/server": "workspace:*"
+    "@donkeylabs/server": "^0.4.0"
   },
   "keywords": [
     "mcp",

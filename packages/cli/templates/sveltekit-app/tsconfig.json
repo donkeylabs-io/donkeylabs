@@ -10,5 +10,11 @@
     "sourceMap": true,
     "strict": true,
     "moduleResolution": "bundler"
-  }
+  },
+  "include": [
+    ".@donkeylabs/server/**/*.ts",
+    ".@donkeylabs/server/**/*.d.ts",
+    "src/**/*.ts",
+    "src/**/*.svelte"
+  ]
 }
