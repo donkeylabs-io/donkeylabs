@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/mcp",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "MCP server for AI-assisted development with @donkeylabs/server",
   "type": "module",
   "main": "./src/server.ts",

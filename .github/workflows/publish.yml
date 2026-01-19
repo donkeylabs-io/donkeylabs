@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write  # Required for npm provenance / OIDC
+      id-token: write  # Required for OIDC
     steps:
       - uses: actions/checkout@v4
 
@@ -24,12 +24,6 @@ jobs:
 
       - name: Run tests
         run: cd packages/server && bun test
-
-      - name: Setup Node.js with npm registry
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
 
       - name: Publish @donkeylabs/server
         run: npm publish --provenance --access public
