@@ -214,7 +214,7 @@ export function createUnifiedServer(config) {
         });
       }
 
-      // 2. API routes (POST /route.name)
+      // 2. API routes (POST only)
       if (req.method === "POST") {
         const routeName = pathname.slice(1); // Remove leading /
 

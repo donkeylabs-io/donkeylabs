@@ -159,7 +159,7 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
               return; // Don't call next()
             }
 
-            // Handle API routes (POST)
+            // Handle API routes (POST only)
             if (req.method === "POST" && /^\/[a-zA-Z][a-zA-Z0-9_.]*$/.test(url)) {
               if (!serverReady || !appServer) return next();
 

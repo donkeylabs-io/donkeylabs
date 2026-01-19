@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/cli",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "CLI for @donkeylabs/server - project scaffolding and code generation",
   "main": "./src/index.ts",
@@ -28,7 +28,9 @@
     "kysely-bun-sqlite": "^0.3.0",
     "kysely-codegen": "^0.17.0",
     "picocolors": "^1.1.1",
-    "prompts": "^2.4.2"
+    "prompts": "^2.4.2",
+    "sharp": "^0.33.0",
+    "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/bun": "latest",

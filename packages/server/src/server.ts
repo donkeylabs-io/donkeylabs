@@ -2,7 +2,7 @@ import { z } from "zod";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { PluginManager, type CoreServices, type ConfiguredPlugin } from "./core";
-import { type IRouter, type RouteDefinition, type ServerContext } from "./router";
+import { type IRouter, type RouteDefinition, type ServerContext, type HandlerRegistry } from "./router";
 import { Handlers } from "./handlers";
 import type { MiddlewareRuntime, MiddlewareDefinition } from "./middleware";
 import {
@@ -85,7 +85,7 @@ export class AppServer {
   private port: number;
   private manager: PluginManager;
   private routers: IRouter[] = [];
-  private routeMap: Map<string, RouteDefinition> = new Map();
+  private routeMap: Map<string, RouteDefinition<keyof HandlerRegistry>> = new Map();
   private coreServices: CoreServices;
   private typeGenConfig?: TypeGenerationConfig;
 
@@ -246,7 +246,7 @@ export class AppServer {
   /**
    * Get the internal route map for adapter introspection.
    */
-  getRouteMap(): Map<string, RouteDefinition> {
+  getRouteMap(): Map<string, RouteDefinition<keyof HandlerRegistry>> {
     return this.routeMap;
   }
 
