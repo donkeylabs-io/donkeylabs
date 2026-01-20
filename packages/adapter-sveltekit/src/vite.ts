@@ -138,12 +138,20 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
 
               // Stream SSE data
               const reader = response.body?.getReader();
+              let sseClosed = false;
+
+              req.on("close", () => {
+                sseClosed = true;
+                reader?.cancel().catch(() => {});
+                appServer.getCore().sse.removeClient(client.id);
+              });
+
               if (reader) {
                 const pump = async () => {
                   try {
-                    while (true) {
+                    while (!sseClosed) {
                       const { done, value } = await reader.read();
-                      if (done) break;
+                      if (done || sseClosed) break;
                       res.write(value);
                     }
                   } catch {
@@ -152,10 +160,6 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
                 };
                 pump();
               }
-
-              req.on("close", () => {
-                appServer.getCore().sse.removeClient(client.id);
-              });
 
               return; // Don't call next()
             }
@@ -376,6 +380,8 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
             if (!isApiRoute) return next();
 
             waitForBackend.then(() => {
+              let proxyAborted = false;
+
               const proxyReq = http.request(
                 {
                   hostname: "localhost",
@@ -385,17 +391,39 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
                   headers: { ...req.headers, host: `localhost:${backendPort}` },
                 },
                 (proxyRes) => {
+                  if (proxyAborted) return;
+
                   res.setHeader("Access-Control-Allow-Origin", "*");
                   res.statusCode = proxyRes.statusCode || 200;
                   for (const [k, v] of Object.entries(proxyRes.headers)) {
                     if (v) res.setHeader(k, v);
                   }
+
+                  // Flush headers for streaming responses
+                  if (typeof res.flushHeaders === "function") {
+                    res.flushHeaders();
+                  }
+
                   // Stream response back (works for binary/streaming responses)
                   proxyRes.pipe(res);
+
+                  // Clean up on proxy response end
+                  proxyRes.on("end", () => {
+                    if (!proxyAborted) res.end();
+                  });
                 }
               );
 
+              // Handle client disconnect - abort proxy request
+              req.on("close", () => {
+                if (!proxyAborted) {
+                  proxyAborted = true;
+                  proxyReq.destroy();
+                }
+              });
+
               proxyReq.on("error", (err) => {
+                if (proxyAborted) return; // Ignore errors after abort
                 console.error(`[donkeylabs-dev] Proxy error:`, err.message);
                 res.statusCode = 502;
                 res.end(JSON.stringify({ error: "Backend unavailable" }));
