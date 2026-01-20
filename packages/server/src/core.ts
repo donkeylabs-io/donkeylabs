@@ -1,5 +1,4 @@
 import { sql, type Kysely } from "kysely";
-import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -484,9 +483,8 @@ export class PluginManager {
 
     for (const service of coreServices) {
       const migrationDir = join(coreMigrationsDir, service);
-      if (existsSync(migrationDir)) {
-        await this.runMigrationsForPlugin(`@core/${service}`, migrationDir);
-      }
+      // runMigrationsForPlugin handles missing directories gracefully (ENOENT)
+      await this.runMigrationsForPlugin(`@core/${service}`, migrationDir);
     }
 
     console.log("Core migrations complete.");
