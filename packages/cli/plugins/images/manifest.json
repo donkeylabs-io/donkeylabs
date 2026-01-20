@@ -1,0 +1,62 @@
+{
+  "name": "images",
+  "version": "1.0.0",
+  "description": "S3 image upload with processing, watermarks, and Svelte components",
+  "dependencies": {
+    "sharp": "^0.33.0"
+  },
+  "copy": [
+    { "from": "plugin", "to": "src/plugins/images" },
+    { "from": "components", "to": "src/lib/components/images" }
+  ],
+  "register": {
+    "plugin": "imagesPlugin",
+    "importPath": "./plugins/images",
+    "configRequired": true
+  },
+  "envVars": [
+    "S3_BUCKET",
+    "S3_REGION",
+    "S3_ACCESS_KEY_ID",
+    "S3_SECRET_ACCESS_KEY",
+    "S3_ENDPOINT"
+  ],
+  "instructions": [
+    "1. Register the plugin in your server setup:",
+    "",
+    "   import { imagesPlugin } from './plugins/images';",
+    "",
+    "   server.registerPlugin(imagesPlugin({",
+    "     s3: {",
+    "       bucket: process.env.S3_BUCKET!,",
+    "       region: process.env.S3_REGION!,",
+    "       accessKeyId: process.env.S3_ACCESS_KEY_ID!,",
+    "       secretAccessKey: process.env.S3_SECRET_ACCESS_KEY!,",
+    "       endpoint: process.env.S3_ENDPOINT,",
+    "     },",
+    "   }));",
+    "",
+    "2. Create routes using the provided schemas and handlers:",
+    "",
+    "   import { createRouter } from '@donkeylabs/server';",
+    "   import { imageSchemas, createSSEHandler } from './plugins/images/handlers';",
+    "",
+    "   const api = createRouter('api');",
+    "",
+    "   // Upload initialization",
+    "   api.route('images.upload').typed({",
+    "     input: imageSchemas.upload.input,",
+    "     output: imageSchemas.upload.output,",
+    "     handle: async (input, ctx) => ctx.plugins.images.initUpload(input),",
+    "   });",
+    "",
+    "   // SSE subscription for progress",
+    "   api.route('images.subscribe').raw(createSSEHandler());",
+    "",
+    "3. Import Svelte components in your frontend:",
+    "",
+    "   import { ImageUploader, UploadProgress } from '$lib/components/images';",
+    "",
+    "See src/plugins/images/handlers/index.ts for all available schemas."
+  ]
+}

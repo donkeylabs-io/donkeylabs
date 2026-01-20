@@ -197,16 +197,16 @@ function generateTypedSvelteKitClient(routes: RouteInfo[]): string {
         const inputType = `Routes.${pascalNs}.${pascalRoute}.Input`;
         const fullRouteName = commonPrefix ? `${commonPrefix}.${r.name}` : r.name;
         // Stream routes provide three methods:
-        // - fetch(input): POST request (programmatic)
+        // - fetch(input, options?): POST request (programmatic)
         // - url(input): GET URL for browser (video src, img src, download links)
-        // - get(input): GET fetch request
+        // - get(input, options?): GET fetch request
         return `    ${methodName}: {
       /** POST request with JSON body (programmatic) */
-      fetch: (input: ${inputType}): Promise<Response> => this.streamRequest("${fullRouteName}", input),
+      fetch: (input: ${inputType}, options?: RequestOptions): Promise<Response> => this.streamRequest("${fullRouteName}", input, options),
       /** GET URL for browser src attributes (video, img, download links) */
       url: (input: ${inputType}): string => this.streamUrl("${fullRouteName}", input),
       /** GET request with query params */
-      get: (input: ${inputType}): Promise<Response> => this.streamGet("${fullRouteName}", input),
+      get: (input: ${inputType}, options?: RequestOptions): Promise<Response> => this.streamGet("${fullRouteName}", input, options),
     }`;
       });
 

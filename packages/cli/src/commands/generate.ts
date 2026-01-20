@@ -95,6 +95,8 @@ interface RouteInfo {
   handler: "typed" | "raw" | string;
   inputSource?: string;
   outputSource?: string;
+  /** SSE event schemas (for sse handler) */
+  eventsSource?: Record<string, string>;
 }
 
 /**
@@ -383,6 +385,8 @@ async function extractRoutesFromServer(entryPath: string): Promise<RouteInfo[]> 
             // Server outputs TypeScript strings directly now
             inputSource: r.inputType,
             outputSource: r.outputType,
+            // SSE event schemas
+            eventsSource: r.eventsType,
           };
         });
         resolve(routes);

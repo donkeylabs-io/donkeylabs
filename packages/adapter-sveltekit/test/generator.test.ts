@@ -268,9 +268,9 @@ describe("Client Generator", () => {
 
       // Should generate method object with fetch, url, get methods
       expect(content).toContain("download: {");
-      expect(content).toContain("fetch: (input: Routes.Files.Download.Input): Promise<Response> => this.streamRequest(");
+      expect(content).toContain("fetch: (input: Routes.Files.Download.Input, options?: RequestOptions): Promise<Response> => this.streamRequest(");
       expect(content).toContain("url: (input: Routes.Files.Download.Input): string => this.streamUrl(");
-      expect(content).toContain("get: (input: Routes.Files.Download.Input): Promise<Response> => this.streamGet(");
+      expect(content).toContain("get: (input: Routes.Files.Download.Input, options?: RequestOptions): Promise<Response> => this.streamGet(");
 
       await cleanup();
     });
@@ -312,7 +312,7 @@ describe("Client Generator", () => {
 
       // Stream route generates object with fetch, url, get methods
       expect(content).toContain("stream: {");
-      expect(content).toContain("fetch: (input: Routes.Media.Stream.Input): Promise<Response> => this.streamRequest(");
+      expect(content).toContain("fetch: (input: Routes.Media.Stream.Input, options?: RequestOptions): Promise<Response> => this.streamRequest(");
       expect(content).toContain('this.streamRequest("api.media.stream"');
 
       // Raw route uses rawRequest()

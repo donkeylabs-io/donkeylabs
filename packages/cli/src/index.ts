@@ -33,6 +33,7 @@ ${pc.bold("Usage:")}
 
 ${pc.bold("Commands:")}
   ${pc.cyan("init")}         Initialize a new project
+  ${pc.cyan("add")}          Add optional plugins (images, auth, etc.)
   ${pc.cyan("generate")}     Generate types (registry, context, client)
   ${pc.cyan("plugin")}       Plugin management
   ${pc.cyan("mcp")}          Setup MCP server for AI-assisted development
@@ -83,6 +84,11 @@ async function main() {
         initArgs.push("--type", values.type);
       }
       await initCommand(initArgs);
+      break;
+
+    case "add":
+      const { addCommand } = await import("./commands/add");
+      await addCommand(positionals.slice(1));
       break;
 
     case "generate":

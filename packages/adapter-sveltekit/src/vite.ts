@@ -218,24 +218,43 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
                   res.setHeader(key, value);
                 }
 
-                // Handle body streaming
+                // Flush headers immediately for streaming responses
+                if (typeof res.flushHeaders === "function") {
+                  res.flushHeaders();
+                }
+
+                // Handle body streaming (non-blocking for continuous streams like MJPEG)
                 if (response.body) {
                   const reader = response.body.getReader();
+                  let closed = false;
+
+                  // Handle client disconnect
+                  req.on("close", () => {
+                    closed = true;
+                    reader.cancel().catch(() => {});
+                  });
+
+                  // Pump without awaiting - allows continuous streams
                   const pump = async () => {
                     try {
-                      while (true) {
+                      while (!closed) {
                         const { done, value } = await reader.read();
-                        if (done) {
-                          res.end();
+                        if (done || closed) {
+                          if (!closed) res.end();
                           break;
                         }
-                        res.write(value);
+                        // Write and check if client is still connected
+                        const canContinue = res.write(value);
+                        if (!canContinue && !closed) {
+                          // Backpressure - wait for drain
+                          await new Promise<void>(resolve => res.once("drain", resolve));
+                        }
                       }
                     } catch {
-                      res.end();
+                      if (!closed) res.end();
                     }
                   };
-                  await pump();
+                  pump(); // Don't await - let it run in background
                 } else {
                   res.end();
                 }

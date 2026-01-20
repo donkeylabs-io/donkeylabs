@@ -33,6 +33,8 @@ interface RouteInfo {
   handler: "typed" | "raw" | string;
   inputSource?: string;  // Original Zod source
   outputSource?: string; // Original Zod source
+  /** SSE event schemas (for sse handler) */
+  eventsSource?: Record<string, string>;
 }
 
 interface EventInfo {
