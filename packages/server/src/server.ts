@@ -780,14 +780,23 @@ ${factoryFunction}
           return this.handleSSE(req, ip);
         }
 
-        // We only allow POST for RPC routes
-        if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
-
         // Extract action from URL path (e.g., "auth.login")
         const actionName = url.pathname.slice(1);
 
         const route = this.routeMap.get(actionName);
         if (route) {
+          const handlerType = route.handler || "typed";
+
+          // Handlers that accept GET requests (for browser compatibility)
+          const getEnabledHandlers = ["stream", "sse", "html", "raw"];
+
+          // Check method based on handler type
+          if (req.method === "GET" && !getEnabledHandlers.includes(handlerType)) {
+            return new Response("Method Not Allowed", { status: 405 });
+          }
+          if (req.method !== "GET" && req.method !== "POST") {
+            return new Response("Method Not Allowed", { status: 405 });
+          }
           const type = route.handler || "typed";
 
           // First check core handlers

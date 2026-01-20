@@ -315,4 +315,216 @@ describe("Stream Handler", () => {
       expect(rawRoute?.handler).toBe("raw");
     });
   });
+
+  describe("streaming integration", () => {
+    it("should stream chunks incrementally to client", async () => {
+      const chunks = ["chunk1", "chunk2", "chunk3", "chunk4", "chunk5"];
+      const receivedChunks: string[] = [];
+
+      // Create a streaming response
+      const stream = new ReadableStream({
+        async start(controller) {
+          for (const chunk of chunks) {
+            controller.enqueue(new TextEncoder().encode(chunk + "\n"));
+            // Small delay to simulate real streaming
+            await new Promise((r) => setTimeout(r, 10));
+          }
+          controller.close();
+        },
+      });
+
+      const def = { input: z.object({}) };
+      const handle = async () =>
+        new Response(stream, {
+          headers: { "Content-Type": "text/plain" },
+        });
+
+      const req = new Request("http://localhost/test", {
+        method: "POST",
+        body: JSON.stringify({}),
+        headers: { "Content-Type": "application/json" },
+      });
+
+      const response = await StreamHandler.execute(req, def as any, handle, {} as any);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("text/plain");
+
+      // Read the stream incrementally
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        receivedChunks.push(decoder.decode(value));
+      }
+
+      // Verify all chunks arrived
+      const allData = receivedChunks.join("");
+      expect(allData).toBe("chunk1\nchunk2\nchunk3\nchunk4\nchunk5\n");
+    });
+
+    it("should handle continuous stream with abort signal", async () => {
+      let streamCancelled = false;
+      const receivedChunks: string[] = [];
+
+      // Create an infinite-ish stream (simulates MJPEG or similar)
+      const stream = new ReadableStream({
+        async pull(controller) {
+          // Send a frame every 10ms
+          controller.enqueue(new TextEncoder().encode("frame\n"));
+          await new Promise((r) => setTimeout(r, 10));
+        },
+        cancel() {
+          streamCancelled = true;
+        },
+      });
+
+      const def = { input: z.object({}) };
+      const handle = async () =>
+        new Response(stream, {
+          headers: { "Content-Type": "multipart/x-mixed-replace" },
+        });
+
+      const req = new Request("http://localhost/test", {
+        method: "POST",
+        body: JSON.stringify({}),
+        headers: { "Content-Type": "application/json" },
+      });
+
+      const response = await StreamHandler.execute(req, def as any, handle, {} as any);
+
+      expect(response.status).toBe(200);
+
+      // Read a few chunks then cancel
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+
+      for (let i = 0; i < 5; i++) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        receivedChunks.push(decoder.decode(value));
+      }
+
+      // Cancel the stream (simulates client disconnect)
+      await reader.cancel();
+
+      // Verify we got some data
+      expect(receivedChunks.length).toBeGreaterThanOrEqual(5);
+      expect(receivedChunks[0]).toBe("frame\n");
+
+      // Verify stream was cancelled
+      // Give it a moment to propagate
+      await new Promise((r) => setTimeout(r, 50));
+      expect(streamCancelled).toBe(true);
+    });
+
+    it("should stream large binary data", async () => {
+      // Create 1MB of random binary data
+      const size = 1024 * 1024;
+      const originalData = new Uint8Array(size);
+      for (let i = 0; i < size; i++) {
+        originalData[i] = i % 256;
+      }
+
+      // Stream it in 64KB chunks
+      const chunkSize = 64 * 1024;
+      const stream = new ReadableStream({
+        start(controller) {
+          let offset = 0;
+          const pushChunk = () => {
+            if (offset >= size) {
+              controller.close();
+              return;
+            }
+            const chunk = originalData.slice(offset, offset + chunkSize);
+            controller.enqueue(chunk);
+            offset += chunkSize;
+            // Use setTimeout to simulate async chunking
+            setTimeout(pushChunk, 0);
+          };
+          pushChunk();
+        },
+      });
+
+      const def = { input: z.object({}) };
+      const handle = async () =>
+        new Response(stream, {
+          headers: { "Content-Type": "application/octet-stream" },
+        });
+
+      const req = new Request("http://localhost/test", {
+        method: "POST",
+        body: JSON.stringify({}),
+        headers: { "Content-Type": "application/json" },
+      });
+
+      const response = await StreamHandler.execute(req, def as any, handle, {} as any);
+
+      // Collect all chunks
+      const chunks: Uint8Array[] = [];
+      const reader = response.body!.getReader();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+
+      // Combine and verify
+      const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+      expect(totalLength).toBe(size);
+
+      const received = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        received.set(chunk, offset);
+        offset += chunk.length;
+      }
+
+      // Verify data integrity
+      expect(received).toEqual(originalData);
+    });
+
+    it("should handle GET request with query params for streaming", async () => {
+      let receivedInput: any;
+
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("video data"));
+          controller.close();
+        },
+      });
+
+      const def = {
+        input: z.object({
+          videoId: z.string(),
+          quality: z.string(),
+        }),
+      };
+
+      const handle = async (input: any) => {
+        receivedInput = input;
+        return new Response(stream, {
+          headers: { "Content-Type": "video/mp4" },
+        });
+      };
+
+      // GET request with query params (like <video src="...">)
+      const req = new Request(
+        "http://localhost/test?videoId=abc123&quality=1080p",
+        { method: "GET" }
+      );
+
+      const response = await StreamHandler.execute(req, def as any, handle, {} as any);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toBe("video/mp4");
+      expect(receivedInput).toEqual({ videoId: "abc123", quality: "1080p" });
+
+      const text = await response.text();
+      expect(text).toBe("video data");
+    });
+  });
 });
