@@ -258,6 +258,46 @@ export class AppServer {
   }
 
   /**
+   * Handle CLI type generation mode.
+   * Call this at the end of your server entry file after registering all routes.
+   * If DONKEYLABS_GENERATE=1 is set, outputs route metadata and exits.
+   * Otherwise, does nothing.
+   *
+   * @example
+   * ```ts
+   * server.use(routes);
+   * server.handleGenerateMode(); // Add this line at the end
+   * ```
+   */
+  handleGenerateMode(): void {
+    if (process.env.DONKEYLABS_GENERATE === "1") {
+      this.outputRoutesForGeneration();
+      process.exit(0);
+    }
+  }
+
+  /**
+   * Output route metadata as JSON for CLI type generation.
+   * Called when DONKEYLABS_GENERATE=1 environment variable is set.
+   */
+  private outputRoutesForGeneration(): void {
+    const routes = [];
+
+    for (const router of this.routers) {
+      for (const route of router.getRoutes()) {
+        routes.push({
+          name: route.name,
+          handler: route.handler || "typed",
+          inputType: route.input ? zodSchemaToTs(route.input) : undefined,
+          outputType: route.output ? zodSchemaToTs(route.output) : undefined,
+        });
+      }
+    }
+
+    console.log(JSON.stringify({ routes }));
+  }
+
+  /**
    * Generate client types from registered routes.
    * Called automatically on startup in dev mode if generateTypes config is provided.
    */

@@ -28,14 +28,5 @@ server.registerPlugin(workflowDemoPlugin);
 // Register routes
 server.use(demoRoutes);
 
-// Handle DONKEYLABS_GENERATE mode for CLI type generation
-if (process.env.DONKEYLABS_GENERATE === "1") {
-  const routes = demoRoutes.getRoutes().map((route) => ({
-    name: route.name,
-    handler: route.handler || "typed",
-    inputType: route.input ? "(generated)" : undefined,
-    outputType: route.output ? "(generated)" : undefined,
-  }));
-  console.log(JSON.stringify({ routes }));
-  process.exit(0);
-}
+// Handle CLI type generation (must be after routes are registered)
+server.handleGenerateMode();
