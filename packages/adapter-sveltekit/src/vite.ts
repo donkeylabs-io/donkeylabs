@@ -80,6 +80,20 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
     name: "donkeylabs-dev",
     enforce: "pre",
 
+    // Read PORT env variable and configure Vite's server port
+    config(config) {
+      const envPort = process.env.PORT ? parseInt(process.env.PORT, 10) : undefined;
+      if (envPort && !isNaN(envPort)) {
+        console.log(`[donkeylabs-dev] Using PORT=${envPort} from environment`);
+        return {
+          server: {
+            ...config.server,
+            port: envPort,
+          },
+        };
+      }
+    },
+
     async configureServer(server: ViteDevServer) {
       const serverEntryResolved = resolve(process.cwd(), serverEntry);
 
