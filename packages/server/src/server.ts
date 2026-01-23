@@ -55,7 +55,10 @@ export interface TypeGenerationConfig {
 }
 
 export interface ServerConfig {
+  /** Server port. Can also be set via PORT environment variable. Default: 3000 */
   port?: number;
+  /** Maximum port attempts if port is in use. Default: 5 */
+  maxPortAttempts?: number;
   db: CoreServices["db"];
   config?: Record<string, any>;
   /** Auto-generate client types on startup in dev mode */
@@ -83,6 +86,7 @@ export interface ServerConfig {
 
 export class AppServer {
   private port: number;
+  private maxPortAttempts: number;
   private manager: PluginManager;
   private routers: IRouter[] = [];
   private routeMap: Map<string, RouteDefinition<keyof HandlerRegistry>> = new Map();
@@ -90,7 +94,10 @@ export class AppServer {
   private typeGenConfig?: TypeGenerationConfig;
 
   constructor(options: ServerConfig) {
-    this.port = options.port ?? 3000;
+    // Port priority: explicit config > PORT env var > default 3000
+    const envPort = process.env.PORT ? parseInt(process.env.PORT, 10) : undefined;
+    this.port = options.port ?? envPort ?? 3000;
+    this.maxPortAttempts = options.maxPortAttempts ?? 5;
 
     // Determine if we should use legacy databases
     const useLegacy = options.useLegacyCoreDatabases ?? false;
@@ -806,104 +813,137 @@ ${factoryFunction}
     }
     logger.info(`Loaded ${this.routeMap.size} RPC routes`);
 
-    // 5. Start HTTP server
-    Bun.serve({
-      port: this.port,
-      fetch: async (req, server) => {
-        const url = new URL(req.url);
+    // 5. Start HTTP server with port retry logic
+    const fetchHandler = async (req: Request, server: ReturnType<typeof Bun.serve>) => {
+      const url = new URL(req.url);
 
-        // Extract client IP
-        const ip = extractClientIP(req, server.requestIP(req)?.address);
+      // Extract client IP
+      const ip = extractClientIP(req, server.requestIP(req)?.address);
 
-        // Handle SSE endpoint
-        if (url.pathname === "/sse" && req.method === "GET") {
-          return this.handleSSE(req, ip);
-        }
-
-        // Extract action from URL path (e.g., "auth.login")
-        const actionName = url.pathname.slice(1);
-
-        const route = this.routeMap.get(actionName);
-        if (route) {
-          const handlerType = route.handler || "typed";
-
-          // Handlers that accept GET requests (for browser compatibility)
-          const getEnabledHandlers = ["stream", "sse", "html", "raw"];
-
-          // Check method based on handler type
-          if (req.method === "GET" && !getEnabledHandlers.includes(handlerType)) {
-            return new Response("Method Not Allowed", { status: 405 });
-          }
-          if (req.method !== "GET" && req.method !== "POST") {
-            return new Response("Method Not Allowed", { status: 405 });
-          }
-          const type = route.handler || "typed";
-
-          // First check core handlers
-          let handler = Handlers[type as keyof typeof Handlers];
-
-          // If not found, check plugin handlers
-          if (!handler) {
-            for (const config of this.manager.getPlugins()) {
-              if (config.handlers && config.handlers[type]) {
-                handler = config.handlers[type] as any;
-                break;
-              }
-            }
-          }
-
-          if (handler) {
-            // Build context with core services and IP
-            const ctx: ServerContext = {
-              db: this.coreServices.db,
-              plugins: this.manager.getServices(),
-              core: this.coreServices,
-              errors: this.coreServices.errors, // Convenience access
-              config: this.coreServices.config,
-              ip,
-              requestId: crypto.randomUUID(),
-            };
-
-            // Get middleware stack for this route
-            const middlewareStack = route.middleware || [];
-
-            // Final handler execution
-            const finalHandler = async () => {
-              return await handler.execute(req, route, route.handle as any, ctx);
-            };
-
-            // Execute middleware chain, then handler - with HttpError handling
-            try {
-              if (middlewareStack.length > 0) {
-                return await this.executeMiddlewareChain(req, ctx, middlewareStack, finalHandler);
-              } else {
-                return await finalHandler();
-              }
-            } catch (error) {
-              // Handle HttpError (thrown via ctx.errors.*)
-              if (error instanceof HttpError) {
-                logger.warn("HTTP error thrown", {
-                  route: actionName,
-                  status: error.status,
-                  code: error.code,
-                  message: error.message,
-                });
-                return Response.json(error.toJSON(), { status: error.status });
-              }
-              // Re-throw unknown errors
-              throw error;
-            }
-          } else {
-            logger.error("Handler not found", { handler: type, route: actionName });
-            return new Response("Handler Not Found", { status: 500 });
-          }
-        }
-
-        return new Response("Not Found", { status: 404 });
+      // Handle SSE endpoint
+      if (url.pathname === "/sse" && req.method === "GET") {
+        return this.handleSSE(req, ip);
       }
-    });
 
-    logger.info(`Server running at http://localhost:${this.port}`);
+      // Extract action from URL path (e.g., "auth.login")
+      const actionName = url.pathname.slice(1);
+
+      const route = this.routeMap.get(actionName);
+      if (route) {
+        const handlerType = route.handler || "typed";
+
+        // Handlers that accept GET requests (for browser compatibility)
+        const getEnabledHandlers = ["stream", "sse", "html", "raw"];
+
+        // Check method based on handler type
+        if (req.method === "GET" && !getEnabledHandlers.includes(handlerType)) {
+          return new Response("Method Not Allowed", { status: 405 });
+        }
+        if (req.method !== "GET" && req.method !== "POST") {
+          return new Response("Method Not Allowed", { status: 405 });
+        }
+        const type = route.handler || "typed";
+
+        // First check core handlers
+        let handler = Handlers[type as keyof typeof Handlers];
+
+        // If not found, check plugin handlers
+        if (!handler) {
+          for (const config of this.manager.getPlugins()) {
+            if (config.handlers && config.handlers[type]) {
+              handler = config.handlers[type] as any;
+              break;
+            }
+          }
+        }
+
+        if (handler) {
+          // Build context with core services and IP
+          const ctx: ServerContext = {
+            db: this.coreServices.db,
+            plugins: this.manager.getServices(),
+            core: this.coreServices,
+            errors: this.coreServices.errors, // Convenience access
+            config: this.coreServices.config,
+            ip,
+            requestId: crypto.randomUUID(),
+          };
+
+          // Get middleware stack for this route
+          const middlewareStack = route.middleware || [];
+
+          // Final handler execution
+          const finalHandler = async () => {
+            return await handler.execute(req, route, route.handle as any, ctx);
+          };
+
+          // Execute middleware chain, then handler - with HttpError handling
+          try {
+            if (middlewareStack.length > 0) {
+              return await this.executeMiddlewareChain(req, ctx, middlewareStack, finalHandler);
+            } else {
+              return await finalHandler();
+            }
+          } catch (error) {
+            // Handle HttpError (thrown via ctx.errors.*)
+            if (error instanceof HttpError) {
+              logger.warn("HTTP error thrown", {
+                route: actionName,
+                status: error.status,
+                code: error.code,
+                message: error.message,
+              });
+              return Response.json(error.toJSON(), { status: error.status });
+            }
+            // Re-throw unknown errors
+            throw error;
+          }
+        } else {
+          logger.error("Handler not found", { handler: type, route: actionName });
+          return new Response("Handler Not Found", { status: 500 });
+        }
+      }
+
+      return new Response("Not Found", { status: 404 });
+    };
+
+    // Try to start server, retrying with different ports if port is in use
+    let currentPort = this.port;
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt < this.maxPortAttempts; attempt++) {
+      try {
+        Bun.serve({
+          port: currentPort,
+          fetch: fetchHandler,
+        });
+        // Update the actual port we're running on
+        this.port = currentPort;
+        logger.info(`Server running at http://localhost:${this.port}`);
+        return;
+      } catch (error) {
+        const isPortInUse =
+          error instanceof Error &&
+          (error.message.includes("EADDRINUSE") ||
+            error.message.includes("address already in use") ||
+            error.message.includes("port") && error.message.includes("in use"));
+
+        if (isPortInUse && attempt < this.maxPortAttempts - 1) {
+          logger.warn(`Port ${currentPort} is already in use, trying port ${currentPort + 1}...`);
+          currentPort++;
+          lastError = error as Error;
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    // If we get here, all attempts failed
+    throw new Error(
+      `Failed to start server after ${this.maxPortAttempts} attempts. ` +
+        `Ports ${this.port}-${currentPort} are all in use. ` +
+        `Last error: ${lastError?.message}`
+    );
   }
 
   /**
