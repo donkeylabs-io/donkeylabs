@@ -166,6 +166,9 @@ export class AppServer {
       websocket,
     };
 
+    // Resolve circular dependency: workflows needs core for step handlers
+    workflows.setCore(this.coreServices);
+
     this.manager = new PluginManager(this.coreServices);
     this.typeGenConfig = options.generateTypes;
   }

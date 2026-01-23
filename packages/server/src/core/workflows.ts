@@ -11,6 +11,7 @@ import type { Events } from "./events";
 import type { Jobs } from "./jobs";
 import type { SSE } from "./sse";
 import type { z } from "zod";
+import type { CoreServices } from "../core";
 
 // Type helper for Zod schema inference
 type ZodSchema = z.ZodTypeAny;
@@ -192,6 +193,8 @@ export interface WorkflowContext {
   instance: WorkflowInstance;
   /** Get a step result with type safety */
   getStepResult<T = any>(stepName: string): T | undefined;
+  /** Core services (logger, events, cache, etc.) */
+  core: CoreServices;
 }
 
 // ============================================
@@ -501,6 +504,8 @@ export interface WorkflowsConfig {
   sse?: SSE;
   /** Poll interval for checking job completion (ms) */
   pollInterval?: number;
+  /** Core services to pass to step handlers */
+  core?: CoreServices;
 }
 
 export interface Workflows {
@@ -518,6 +523,8 @@ export interface Workflows {
   resume(): Promise<void>;
   /** Stop the workflow service */
   stop(): Promise<void>;
+  /** Set core services (called after initialization to resolve circular dependency) */
+  setCore(core: CoreServices): void;
 }
 
 // ============================================
@@ -529,6 +536,7 @@ class WorkflowsImpl implements Workflows {
   private events?: Events;
   private jobs?: Jobs;
   private sse?: SSE;
+  private core?: CoreServices;
   private definitions = new Map<string, WorkflowDefinition>();
   private running = new Map<string, { timeout?: ReturnType<typeof setTimeout> }>();
   private pollInterval: number;
@@ -538,7 +546,12 @@ class WorkflowsImpl implements Workflows {
     this.events = config.events;
     this.jobs = config.jobs;
     this.sse = config.sse;
+    this.core = config.core;
     this.pollInterval = config.pollInterval ?? 1000;
+  }
+
+  setCore(core: CoreServices): void {
+    this.core = core;
   }
 
   register(definition: WorkflowDefinition): void {
@@ -1099,6 +1112,7 @@ class WorkflowsImpl implements Workflows {
       getStepResult: <T = any>(stepName: string): T | undefined => {
         return steps[stepName] as T | undefined;
       },
+      core: this.core!,
     };
   }
 
