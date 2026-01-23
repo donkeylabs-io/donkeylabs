@@ -88,6 +88,15 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
         // Import and initialize server directly - no subprocess, no proxy
         console.log("[donkeylabs-dev] Starting in-process mode (Bun runtime detected)");
 
+        // Log the actual URL once Vite's server starts listening
+        server.httpServer?.on("listening", () => {
+          const address = server.httpServer?.address();
+          if (address && typeof address === "object") {
+            const host = address.address === "::" || address.address === "0.0.0.0" ? "localhost" : address.address;
+            console.log(`[donkeylabs-dev] Ready at http://${host}:${address.port}`);
+          }
+        });
+
         try {
           const serverModule = await import(/* @vite-ignore */ serverEntryResolved);
           appServer = serverModule.server || serverModule.default;
