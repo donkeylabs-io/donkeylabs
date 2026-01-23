@@ -177,6 +177,23 @@ export interface SSEOptions {
   reconnectDelay?: number;
 }
 
+/**
+ * SSE subscription returned by route-specific SSE methods.
+ * Provides typed event handling for the route's defined events.
+ */
+export interface SSESubscription<TEvents extends Record<string, any>> {
+  /** Subscribe to a typed event. Returns unsubscribe function. */
+  on<E extends keyof TEvents>(event: E, handler: (data: TEvents[E]) => void): () => void;
+  /** Subscribe to an event once. Returns unsubscribe function. */
+  once<E extends keyof TEvents>(event: E, handler: (data: TEvents[E]) => void): () => void;
+  /** Remove all handlers for an event. */
+  off<E extends keyof TEvents>(event: E): void;
+  /** Close the SSE connection. */
+  close(): void;
+  /** Whether the connection is currently open. */
+  readonly connected: boolean;
+}
+
 // ============================================
 // Base Client Implementation
 // ============================================
@@ -268,9 +285,208 @@ export class ApiClientBase<TEvents extends Record<string, any> = Record<string, 
     });
   }
 
+  /**
+   * Make a stream/html request with validated input, returns raw Response
+   */
+  protected async streamRequest<TInput>(
+    route: string,
+    input: TInput
+  ): Promise<Response> {
+    const fetchFn = this.options.fetch || fetch;
+
+    return fetchFn(`${this.baseUrl}/${route}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...this.options.headers,
+      },
+      credentials: this.options.credentials,
+      body: JSON.stringify(input),
+    });
+  }
+
+  /**
+   * Upload form data with files
+   */
+  protected async uploadFormData<TFields, TOutput>(
+    route: string,
+    fields: TFields,
+    files?: File[]
+  ): Promise<TOutput> {
+    const fetchFn = this.options.fetch || fetch;
+    const formData = new FormData();
+
+    // Add fields as JSON values
+    for (const [key, value] of Object.entries(fields as Record<string, any>)) {
+      formData.append(key, typeof value === "string" ? value : JSON.stringify(value));
+    }
+
+    // Add files
+    if (files) {
+      for (const file of files) {
+        formData.append("file", file);
+      }
+    }
+
+    const response = await fetchFn(`${this.baseUrl}/${route}`, {
+      method: "POST",
+      headers: {
+        ...this.options.headers,
+        // Don't set Content-Type - browser will set it with boundary
+      },
+      credentials: this.options.credentials,
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const body = (await response.json().catch(() => ({}))) as Record<string, any>;
+      if (response.status === 400 && body.details?.issues) {
+        throw new ValidationError(body.details.issues);
+      }
+      throw new ApiError(response.status, body, body.message);
+    }
+
+    if (response.status === 204) {
+      return undefined as TOutput;
+    }
+
+    return response.json() as Promise<TOutput>;
+  }
+
   // ==========================================
   // SSE Connection Methods
   // ==========================================
+
+  /**
+   * Connect to a specific SSE route endpoint.
+   * Used by generated client methods for .sse() routes.
+   * @returns SSE subscription with typed event handlers
+   */
+  protected connectToSSERoute<TEvents extends Record<string, any>>(
+    route: string,
+    input: Record<string, any> = {},
+    options: Omit<SSEOptions, "endpoint" | "channels"> = {}
+  ): SSESubscription<TEvents> {
+    const url = new URL(`${this.baseUrl}/${route}`);
+
+    // Add input as query params
+    for (const [key, value] of Object.entries(input)) {
+      if (value !== undefined && value !== null) {
+        url.searchParams.set(key, typeof value === "string" ? value : JSON.stringify(value));
+      }
+    }
+
+    const eventSource = new EventSource(url.toString(), {
+      withCredentials: true,
+    });
+
+    const handlers = new Map<string, Set<(data: any) => void>>();
+    let onConnectCallback: (() => void) | undefined = options.onConnect;
+    let onDisconnectCallback: (() => void) | undefined = options.onDisconnect;
+    let onErrorCallback: ((error: Event) => void) | undefined = options.onError;
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+    const autoReconnect = options.autoReconnect ?? true;
+    const reconnectDelay = options.reconnectDelay ?? 3000;
+
+    const dispatchEvent = (eventName: string, rawData: string) => {
+      const eventHandlers = handlers.get(eventName);
+      if (!eventHandlers?.size) return;
+
+      let data: any;
+      try {
+        data = JSON.parse(rawData);
+      } catch {
+        data = rawData;
+      }
+
+      for (const handler of eventHandlers) {
+        try {
+          handler(data);
+        } catch (error) {
+          console.error(`Error in SSE event handler for "${eventName}":`, error);
+        }
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (reconnectTimeout) return;
+      reconnectTimeout = setTimeout(() => {
+        reconnectTimeout = null;
+        // Reconnect by creating new subscription
+        const newSub = this.connectToSSERoute<TEvents>(route, input, options);
+        // Transfer handlers
+        for (const [event, eventHandlers] of handlers) {
+          for (const handler of eventHandlers) {
+            newSub.on(event as keyof TEvents, handler);
+          }
+        }
+      }, reconnectDelay);
+    };
+
+    eventSource.onopen = () => {
+      onConnectCallback?.();
+    };
+
+    eventSource.onerror = (event) => {
+      onErrorCallback?.(event);
+      if (eventSource.readyState === 2) {
+        onDisconnectCallback?.();
+        if (autoReconnect) {
+          scheduleReconnect();
+        }
+      }
+    };
+
+    eventSource.onmessage = (event) => {
+      dispatchEvent("message", event.data);
+    };
+
+    const subscription: SSESubscription<TEvents> = {
+      on: <E extends keyof TEvents>(event: E, handler: (data: TEvents[E]) => void) => {
+        const eventName = String(event);
+        let eventHandlers = handlers.get(eventName);
+        if (!eventHandlers) {
+          eventHandlers = new Set();
+          handlers.set(eventName, eventHandlers);
+          // Add listener to EventSource
+          if (eventName !== "message") {
+            eventSource.addEventListener(eventName, (e) => {
+              if ("data" in e) {
+                dispatchEvent(eventName, (e as SSEMessageEvent).data);
+              }
+            });
+          }
+        }
+        eventHandlers.add(handler as (data: any) => void);
+        return () => {
+          eventHandlers?.delete(handler as (data: any) => void);
+        };
+      },
+      once: <E extends keyof TEvents>(event: E, handler: (data: TEvents[E]) => void) => {
+        const unsubscribe = subscription.on(event, (data) => {
+          unsubscribe();
+          handler(data);
+        });
+        return unsubscribe;
+      },
+      off: <E extends keyof TEvents>(event: E) => {
+        handlers.delete(String(event));
+      },
+      close: () => {
+        if (reconnectTimeout) {
+          clearTimeout(reconnectTimeout);
+          reconnectTimeout = null;
+        }
+        eventSource.close();
+        onDisconnectCallback?.();
+      },
+      get connected() {
+        return eventSource.readyState === 1;
+      },
+    };
+
+    return subscription;
+  }
 
   /**
    * Connect to SSE endpoint for real-time updates

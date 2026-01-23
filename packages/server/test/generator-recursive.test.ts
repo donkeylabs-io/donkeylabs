@@ -160,6 +160,69 @@ describe("Client Generator - Output Type Handling", () => {
     expect(code).toContain("export namespace List {");
     expect(code).toContain("export type Output = Expand<{ files: string[] }>;");
   });
+
+  it("should generate SSE handler methods with typed events", () => {
+    const server = new AppServer({
+      config: { env: "test" },
+      db: {} as any,
+    });
+
+    const routes = [
+      {
+        name: "notifications.subscribe",
+        prefix: "notifications",
+        routeName: "subscribe",
+        handler: "sse" as const,
+        inputSource: "{ userId: string }",
+        eventsSource: {
+          "notification": "{ message: string; id: string }",
+          "announcement": "{ title: string; urgent: boolean }",
+        },
+      },
+    ];
+
+    const code = (server as any).generateClientCode(routes);
+
+    // SSE handler should have Input and Events types
+    expect(code).toContain("export namespace Subscribe {");
+    expect(code).toContain("export type Input = Expand<{ userId: string }>;");
+    expect(code).toContain("export type Events = Expand<{");
+    expect(code).toContain('"notification": { message: string; id: string };');
+    expect(code).toContain('"announcement": { title: string; urgent: boolean };');
+
+    // SSE handler should generate connectToSSERoute method
+    expect(code).toContain("subscribe: (input: Routes.Notifications.Subscribe.Input");
+    expect(code).toContain("SSESubscription<Routes.Notifications.Subscribe.Events>");
+    expect(code).toContain('this.connectToSSERoute("notifications.subscribe", input, options)');
+
+    // SSE imports should be included
+    expect(code).toContain("type SSESubscription");
+  });
+
+  it("should generate SSE handler with empty events when no events defined", () => {
+    const server = new AppServer({
+      config: { env: "test" },
+      db: {} as any,
+    });
+
+    const routes = [
+      {
+        name: "events.stream",
+        prefix: "events",
+        routeName: "stream",
+        handler: "sse" as const,
+        inputSource: "{ channel: string }",
+        eventsSource: undefined, // No events defined
+      },
+    ];
+
+    const code = (server as any).generateClientCode(routes);
+
+    // Should still generate SSE method
+    expect(code).toContain("export namespace Stream {");
+    expect(code).toContain("export type Events = Expand<Record<string, unknown>>;");
+    expect(code).toContain('this.connectToSSERoute("events.stream", input, options)');
+  });
 });
 
 describe("Recursive Client Generator", () => {

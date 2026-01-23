@@ -324,9 +324,10 @@ export class AppServer {
       name: string;
       prefix: string;
       routeName: string;
-      handler: "typed" | "raw";
+      handler: "typed" | "raw" | "sse" | "stream" | "formData" | "html";
       inputSource?: string;
       outputSource?: string;
+      eventsSource?: Record<string, string>;
     }> = [];
 
     const routesWithoutOutput: string[] = [];
@@ -342,13 +343,23 @@ export class AppServer {
           routesWithoutOutput.push(route.name);
         }
 
+        // Extract SSE event schemas
+        let eventsSource: Record<string, string> | undefined;
+        if (route.handler === "sse" && route.events) {
+          eventsSource = {};
+          for (const [eventName, eventSchema] of Object.entries(route.events)) {
+            eventsSource[eventName] = zodSchemaToTs(eventSchema as any);
+          }
+        }
+
         routes.push({
           name: route.name,
           prefix,
           routeName,
-          handler: (route.handler || "typed") as "typed" | "raw",
+          handler: (route.handler || "typed") as "typed" | "raw" | "sse" | "stream" | "formData" | "html",
           inputSource: route.input ? zodSchemaToTs(route.input) : undefined,
           outputSource: route.output ? zodSchemaToTs(route.output) : undefined,
+          eventsSource,
         });
       }
     }
@@ -383,9 +394,10 @@ export class AppServer {
       name: string;
       prefix: string;
       routeName: string;
-      handler: "typed" | "raw";
+      handler: "typed" | "raw" | "sse" | "stream" | "formData" | "html";
       inputSource?: string;
       outputSource?: string;
+      eventsSource?: Record<string, string>;
     }>
   ): string {
     const baseImport =
@@ -448,19 +460,43 @@ export function createApi(options?: ClientOptions) {
     // Recursive function to generate Type definitions
     function generateTypeBlock(node: RouteNode, indent: string): string {
       const blocks: string[] = [];
-      
+
       // 1. Valid Input/Output types for routes at this level
       if (node.routes.length > 0) {
         const routeTypes = node.routes.map(r => {
-           if (r.handler !== "typed") return "";
            const routeNs = toPascalCase(r.routeName);
            const inputType = r.inputSource ?? "Record<string, never>";
-           const outputType = r.outputSource ?? "void";
-           return `${indent}export namespace ${routeNs} {
+
+           if (r.handler === "typed" || r.handler === "formData") {
+             // typed and formData have Input and Output
+             const outputType = r.outputSource ?? "void";
+             return `${indent}export namespace ${routeNs} {
 ${indent}  export type Input = Expand<${inputType}>;
 ${indent}  export type Output = Expand<${outputType}>;
 ${indent}}
 ${indent}export type ${routeNs} = { Input: ${routeNs}.Input; Output: ${routeNs}.Output };`;
+           } else if (r.handler === "stream" || r.handler === "html") {
+             // stream and html have Input only (returns Response/string)
+             return `${indent}export namespace ${routeNs} {
+${indent}  export type Input = Expand<${inputType}>;
+${indent}}
+${indent}export type ${routeNs} = { Input: ${routeNs}.Input };`;
+           } else if (r.handler === "sse") {
+             // Generate Events type from eventsSource
+             const eventsEntries = r.eventsSource
+               ? Object.entries(r.eventsSource)
+                   .map(([eventName, eventType]) => `${indent}    "${eventName}": ${eventType};`)
+                   .join("\n")
+               : "";
+             const eventsType = eventsEntries ? `{\n${eventsEntries}\n${indent}  }` : "Record<string, unknown>";
+             return `${indent}export namespace ${routeNs} {
+${indent}  export type Input = Expand<${inputType}>;
+${indent}  export type Events = Expand<${eventsType}>;
+${indent}}
+${indent}export type ${routeNs} = { Input: ${routeNs}.Input; Events: ${routeNs}.Events };`;
+           }
+           // raw handler has no types
+           return "";
         }).filter(Boolean);
         if (routeTypes.length) blocks.push(routeTypes.join("\n\n"));
       }
@@ -481,15 +517,28 @@ ${indent}export type ${routeNs} = { Input: ${routeNs}.Input; Output: ${routeNs}.
       const methods = node.routes.map(r => {
          const methodName = toCamelCase(r.routeName);
          // r.name is the full path e.g. "api.v1.users.get"
-         
+         const pathParts = r.name.split(".");
+         const typePath = ["Routes", ...pathParts.slice(0, -1).map(toPascalCase), toPascalCase(r.routeName)];
+
          if (r.handler === "typed") {
-            const pathParts = r.name.split(".");
-            const typePath = ["Routes", ...pathParts.slice(0, -1).map(toPascalCase), toPascalCase(r.routeName)];
             const inputType = typePath.join(".") + ".Input";
             const outputType = typePath.join(".") + ".Output";
-            
             return `${indent}${methodName}: (input: ${inputType}): Promise<${outputType}> => this.request("${r.name}", input)`;
+         } else if (r.handler === "formData") {
+            const inputType = typePath.join(".") + ".Input";
+            const outputType = typePath.join(".") + ".Output";
+            // formData needs to send multipart form data
+            return `${indent}${methodName}: (fields: ${inputType}, files?: File[]): Promise<${outputType}> => this.uploadFormData("${r.name}", fields, files)`;
+         } else if (r.handler === "stream" || r.handler === "html") {
+            // stream and html have validated input but return Response
+            const inputType = typePath.join(".") + ".Input";
+            return `${indent}${methodName}: (input: ${inputType}): Promise<Response> => this.streamRequest("${r.name}", input)`;
+         } else if (r.handler === "sse") {
+            const inputType = typePath.join(".") + ".Input";
+            const eventsType = typePath.join(".") + ".Events";
+            return `${indent}${methodName}: (input: ${inputType}, options?: Omit<SSEOptions, "endpoint" | "channels">): SSESubscription<${eventsType}> => this.connectToSSERoute("${r.name}", input, options)`;
          } else {
+            // raw handler
             return `${indent}${methodName}: (init?: RequestInit): Promise<Response> => this.rawRequest("${r.name}", init)`;
          }
       });
@@ -515,10 +564,16 @@ ${indent}export type ${routeNs} = { Input: ${routeNs}.Input; Output: ${routeNs}.
     // rootNode children are top-level namespaces (api, health) -> Top Level Class Properties
     const methodBlocks: string[] = [generateMethodBlock(rootNode, "  ", "", true)];
 
+    // Check if we have any SSE routes to know if we need SSE type imports
+    const hasSSERoutes = routes.some(r => r.handler === "sse");
+    const sseImports = hasSSERoutes
+      ? '\nimport { type SSEOptions, type SSESubscription } from "@donkeylabs/server/client";'
+      : "";
+
     return `// Auto-generated by @donkeylabs/server
 // DO NOT EDIT MANUALLY
 
-${baseImport}
+${baseImport}${sseImports}
 
 // Utility type that forces TypeScript to expand types on hover
 type Expand<T> = T extends infer O ? { [K in keyof O]: O[K] } : never;

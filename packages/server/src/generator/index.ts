@@ -440,7 +440,7 @@ export function generateClientCode(
     const namespaceName = prefix === "_root" ? "Root" : toPascalCase(prefix);
     const methodName = prefix === "_root" ? "_root" : prefix;
 
-    const typeEntries = prefixRoutes
+    const typedTypeEntries = prefixRoutes
       .filter((r) => r.handler === "typed")
       .map((r) => {
         const inputType = zodToTypeScript(r.inputSource);
@@ -452,6 +452,51 @@ export function generateClientCode(
     }
     export type ${routeNs} = { Input: ${routeNs}.Input; Output: ${routeNs}.Output };`;
       });
+
+    const formDataTypeEntries = prefixRoutes
+      .filter((r) => r.handler === "formData")
+      .map((r) => {
+        const inputType = zodToTypeScript(r.inputSource);
+        const outputType = zodToTypeScript(r.outputSource);
+        const routeNs = toPascalCase(r.routeName);
+        return `    export namespace ${routeNs} {
+      export type Input = ${inputType};
+      export type Output = ${outputType};
+    }
+    export type ${routeNs} = { Input: ${routeNs}.Input; Output: ${routeNs}.Output };`;
+      });
+
+    const streamTypeEntries = prefixRoutes
+      .filter((r) => r.handler === "stream" || r.handler === "html")
+      .map((r) => {
+        const inputType = zodToTypeScript(r.inputSource);
+        const routeNs = toPascalCase(r.routeName);
+        return `    export namespace ${routeNs} {
+      export type Input = ${inputType};
+    }
+    export type ${routeNs} = { Input: ${routeNs}.Input };`;
+      });
+
+    const sseTypeEntries = prefixRoutes
+      .filter((r) => r.handler === "sse")
+      .map((r) => {
+        const inputType = zodToTypeScript(r.inputSource);
+        const routeNs = toPascalCase(r.routeName);
+        // Generate Events type from eventsSource
+        const eventsEntries = r.eventsSource
+          ? Object.entries(r.eventsSource)
+              .map(([eventName, eventType]) => `      "${eventName}": ${zodToTypeScript(eventType)};`)
+              .join("\n")
+          : "";
+        const eventsType = eventsEntries ? `{\n${eventsEntries}\n    }` : "Record<string, unknown>";
+        return `    export namespace ${routeNs} {
+      export type Input = ${inputType};
+      export type Events = ${eventsType};
+    }
+    export type ${routeNs} = { Input: ${routeNs}.Input; Events: ${routeNs}.Events };`;
+      });
+
+    const typeEntries = [...typedTypeEntries, ...formDataTypeEntries, ...streamTypeEntries, ...sseTypeEntries];
 
     if (typeEntries.length > 0) {
       routeTypeBlocks.push(`  export namespace ${namespaceName} {
@@ -475,7 +520,37 @@ ${typeEntries.join("\n\n")}
       this.rawRequest("${r.name}", init)`;
       });
 
-    const allMethods = [...methodEntries, ...rawMethodEntries];
+    const sseMethodEntries = prefixRoutes
+      .filter((r) => r.handler === "sse")
+      .map((r) => {
+        const inputType = r.inputSource
+          ? `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Input`
+          : "Record<string, any>";
+        const eventsType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Events`;
+        return `    ${toCamelCase(r.routeName)}: (input: ${inputType}, options?: Omit<SSEOptions, "endpoint" | "channels">): SSESubscription<${eventsType}> =>
+      this.connectToSSERoute("${r.name}", input, options)`;
+      });
+
+    const streamMethodEntries = prefixRoutes
+      .filter((r) => r.handler === "stream" || r.handler === "html")
+      .map((r) => {
+        const inputType = r.inputSource
+          ? `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Input`
+          : "Record<string, any>";
+        return `    ${toCamelCase(r.routeName)}: (input: ${inputType}): Promise<Response> =>
+      this.streamRequest("${r.name}", input)`;
+      });
+
+    const formDataMethodEntries = prefixRoutes
+      .filter((r) => r.handler === "formData")
+      .map((r) => {
+        const inputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Input`;
+        const outputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Output`;
+        return `    ${toCamelCase(r.routeName)}: (fields: ${inputType}, files?: File[]): Promise<${outputType}> =>
+      this.uploadFormData("${r.name}", fields, files)`;
+      });
+
+    const allMethods = [...methodEntries, ...rawMethodEntries, ...sseMethodEntries, ...streamMethodEntries, ...formDataMethodEntries];
 
     if (allMethods.length > 0) {
       routeNamespaceBlocks.push(`  ${methodName} = {
@@ -512,6 +587,7 @@ import {
   type RequestOptions,
   type ApiClientOptions,
   type SSEOptions,
+  type SSESubscription,
 } from "./base";${additionalImportsStr}
 
 // ============================================
@@ -560,7 +636,7 @@ export function createApiClient(config: ApiClientConfig): ApiClient {
 }
 
 // Re-export base types for convenience
-export { ApiError, ValidationError, type RequestOptions, type SSEOptions };
+export { ApiError, ValidationError, type RequestOptions, type SSEOptions, type SSESubscription };
 `;
 }
 
