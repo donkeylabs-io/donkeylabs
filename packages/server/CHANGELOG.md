@@ -1,5 +1,11 @@
 # @donkeylabs/server
 
+## 2.0.7
+
+### Patch Changes
+
+- Fix SSE connection timeouts by setting Bun.serve idleTimeout to 255 seconds
+
 ## 2.0.6
 
 ### Patch Changes

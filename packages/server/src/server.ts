@@ -1278,6 +1278,7 @@ ${factoryFunction}
         Bun.serve({
           port: currentPort,
           fetch: fetchHandler,
+          idleTimeout: 255, // Max value (255 seconds) for SSE/long-lived connections
         });
         // Update the actual port we're running on
         this.port = currentPort;
