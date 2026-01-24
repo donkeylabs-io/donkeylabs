@@ -33,7 +33,7 @@ function isRouteInfo(route: RouteInfo | ExtractedRoute): route is RouteInfo {
 /** SvelteKit-specific generator options */
 export const svelteKitGeneratorOptions: ClientGeneratorOptions = {
   baseImport:
-    'import { UnifiedApiClientBase, SSEConnection, type ClientOptions } from "@donkeylabs/adapter-sveltekit/client";',
+    'import { UnifiedApiClientBase, SSEConnection, type ClientOptions, type RequestOptions } from "@donkeylabs/adapter-sveltekit/client";',
   baseClass: "UnifiedApiClientBase",
   constructorSignature: "options?: ClientOptions",
   constructorBody: "super(options);",
