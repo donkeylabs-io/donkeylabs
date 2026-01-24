@@ -283,6 +283,13 @@ const DOCS_DIR = findDocsDir();
 
 const RESOURCES = [
   {
+    uri: "donkeylabs://docs/quickstart",
+    name: "Quick Start Guide",
+    description: "Get from zero to a working API in 5 minutes - essential first read",
+    mimeType: "text/markdown",
+    docFile: "QUICKSTART.md",
+  },
+  {
     uri: "donkeylabs://docs/database",
     name: "Database (Kysely)",
     description: "Kysely queries, CRUD operations, joins, transactions, migrations",
@@ -985,6 +992,49 @@ const tools = [
           description: "Output path for generated client (e.g., 'src/lib/api.ts' for SvelteKit, './client' for standalone)",
         },
       },
+    },
+  },
+  {
+    name: "scaffold_feature",
+    description: `Scaffold a complete feature module with router, schemas, handlers, and optional CRUD operations.
+
+Creates a feature module following the recommended pattern:
+\`\`\`
+routes/[name]/
+├── index.ts              # Router (thin wiring)
+├── [name].schemas.ts     # Zod schemas + types
+├── handlers/
+│   ├── create.handler.ts # (if crud)
+│   ├── list.handler.ts   # (if crud)
+│   ├── get.handler.ts    # (if crud)
+│   ├── update.handler.ts # (if crud)
+│   └── delete.handler.ts # (if crud)
+└── [name].test.ts        # Test file
+\`\`\`
+
+Use this for app-specific routes. For reusable business logic, use create_plugin instead.`,
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        name: {
+          type: "string",
+          description: "Feature name in camelCase (e.g., 'orders', 'products', 'comments')",
+        },
+        crud: {
+          type: "boolean",
+          description: "Generate CRUD handlers (create, list, get, update, delete)",
+          default: false,
+        },
+        tableName: {
+          type: "string",
+          description: "Database table name (defaults to pluralized name). Required if crud=true.",
+        },
+        fields: {
+          type: "string",
+          description: "Comma-separated field definitions for schemas (e.g., 'title: string, price: number, active: boolean')",
+        },
+      },
+      required: ["name"],
     },
   },
 ];
@@ -2526,6 +2576,440 @@ ${output}
   }
 }
 
+async function scaffoldFeature(args: {
+  name: string;
+  crud?: boolean;
+  tableName?: string;
+  fields?: string;
+}): Promise<string> {
+  const { name, crud = false, tableName, fields } = args;
+
+  // Validate name
+  const nameValid = validatePluginName(name); // Same rules as plugins
+  if (!nameValid.valid) {
+    return formatError(nameValid.error!, undefined, nameValid.suggestion);
+  }
+
+  const featureDir = join(projectRoot, projectConfig.routesDir, name);
+  if (existsSync(featureDir)) {
+    return formatError(
+      `Feature "${name}" already exists at ${projectConfig.routesDir}/${name}/`,
+      undefined,
+      "Choose a different name or manually edit the existing feature."
+    );
+  }
+
+  // Parse fields if provided
+  const parsedFields: Array<{ name: string; type: string; optional: boolean }> = [];
+  if (fields) {
+    for (const field of fields.split(",")) {
+      const trimmed = field.trim();
+      const match = trimmed.match(/^(\w+)(\?)?:\s*(\w+)$/);
+      if (match) {
+        parsedFields.push({
+          name: match[1],
+          optional: !!match[2],
+          type: match[3],
+        });
+      }
+    }
+  }
+
+  // Determine table name
+  const table = tableName || name;
+  const pascalName = toPascalCase(name);
+  const singularPascal = pascalName.endsWith("s") ? pascalName.slice(0, -1) : pascalName;
+
+  // Create directories
+  mkdirSync(featureDir, { recursive: true });
+  mkdirSync(join(featureDir, "handlers"), { recursive: true });
+
+  // Generate Zod field definitions
+  const zodFields = parsedFields.length > 0
+    ? parsedFields.map(f => {
+        const zodType = f.type === "number" ? "z.number()" :
+                        f.type === "boolean" ? "z.boolean()" :
+                        "z.string()";
+        return `  ${f.name}: ${zodType}${f.optional ? ".optional()" : ""}`;
+      }).join(",\n")
+    : "  // Add your fields here\n  // title: z.string(),\n  // description: z.string().optional()";
+
+  // 1. Create schemas file
+  const schemasContent = `import { z } from "zod";
+
+// =============================================================================
+// INPUT SCHEMAS
+// =============================================================================
+
+export const create${singularPascal}Schema = z.object({
+${zodFields},
+});
+
+export const update${singularPascal}Schema = z.object({
+  id: z.string(),
+${zodFields},
+});
+
+export const get${singularPascal}Schema = z.object({
+  id: z.string(),
+});
+
+export const list${pascalName}Schema = z.object({
+  limit: z.number().optional().default(50),
+  offset: z.number().optional().default(0),
+});
+
+export const delete${singularPascal}Schema = z.object({
+  id: z.string(),
+});
+
+// =============================================================================
+// OUTPUT SCHEMAS
+// =============================================================================
+
+export const ${name.charAt(0).toLowerCase() + name.slice(1)}Schema = z.object({
+  id: z.string(),
+${zodFields},
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+// =============================================================================
+// DERIVED TYPES
+// =============================================================================
+
+export type Create${singularPascal}Input = z.infer<typeof create${singularPascal}Schema>;
+export type Update${singularPascal}Input = z.infer<typeof update${singularPascal}Schema>;
+export type ${singularPascal} = z.infer<typeof ${name.charAt(0).toLowerCase() + name.slice(1)}Schema>;
+`;
+
+  await Bun.write(join(featureDir, `${name}.schemas.ts`), schemasContent);
+
+  // 2. Create handler files if CRUD
+  const handlers: string[] = [];
+
+  if (crud) {
+    // Create handler
+    const createHandler = `import type { Handler, Routes, AppContext } from "$server/api";
+
+export class Create${singularPascal}Handler implements Handler<Routes.${pascalName}.Create> {
+  constructor(private ctx: AppContext) {}
+
+  async handle(input: Routes.${pascalName}.Create.Input): Promise<Routes.${pascalName}.Create.Output> {
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    await this.ctx.db
+      .insertInto("${table}")
+      .values({
+        id,
+        ...input,
+        created_at: now,
+        updated_at: now,
+      })
+      .execute();
+
+    return this.ctx.db
+      .selectFrom("${table}")
+      .where("id", "=", id)
+      .selectAll()
+      .executeTakeFirstOrThrow();
+  }
+}
+`;
+    await Bun.write(join(featureDir, "handlers", "create.handler.ts"), createHandler);
+    handlers.push("create");
+
+    // List handler
+    const listHandler = `import type { Handler, Routes, AppContext } from "$server/api";
+
+export class List${pascalName}Handler implements Handler<Routes.${pascalName}.List> {
+  constructor(private ctx: AppContext) {}
+
+  async handle(input: Routes.${pascalName}.List.Input): Promise<Routes.${pascalName}.List.Output> {
+    return this.ctx.db
+      .selectFrom("${table}")
+      .selectAll()
+      .limit(input.limit ?? 50)
+      .offset(input.offset ?? 0)
+      .execute();
+  }
+}
+`;
+    await Bun.write(join(featureDir, "handlers", "list.handler.ts"), listHandler);
+    handlers.push("list");
+
+    // Get handler
+    const getHandler = `import type { Handler, Routes, AppContext } from "$server/api";
+
+export class Get${singularPascal}Handler implements Handler<Routes.${pascalName}.Get> {
+  constructor(private ctx: AppContext) {}
+
+  async handle(input: Routes.${pascalName}.Get.Input): Promise<Routes.${pascalName}.Get.Output> {
+    const result = await this.ctx.db
+      .selectFrom("${table}")
+      .where("id", "=", input.id)
+      .selectAll()
+      .executeTakeFirst();
+
+    if (!result) {
+      throw this.ctx.errors.NotFound("${singularPascal} not found");
+    }
+
+    return result;
+  }
+}
+`;
+    await Bun.write(join(featureDir, "handlers", "get.handler.ts"), getHandler);
+    handlers.push("get");
+
+    // Update handler
+    const updateHandler = `import type { Handler, Routes, AppContext } from "$server/api";
+
+export class Update${singularPascal}Handler implements Handler<Routes.${pascalName}.Update> {
+  constructor(private ctx: AppContext) {}
+
+  async handle(input: Routes.${pascalName}.Update.Input): Promise<Routes.${pascalName}.Update.Output> {
+    const { id, ...data } = input;
+
+    await this.ctx.db
+      .updateTable("${table}")
+      .set({
+        ...data,
+        updated_at: new Date().toISOString(),
+      })
+      .where("id", "=", id)
+      .execute();
+
+    const result = await this.ctx.db
+      .selectFrom("${table}")
+      .where("id", "=", id)
+      .selectAll()
+      .executeTakeFirst();
+
+    if (!result) {
+      throw this.ctx.errors.NotFound("${singularPascal} not found");
+    }
+
+    return result;
+  }
+}
+`;
+    await Bun.write(join(featureDir, "handlers", "update.handler.ts"), updateHandler);
+    handlers.push("update");
+
+    // Delete handler
+    const deleteHandler = `import type { Handler, Routes, AppContext } from "$server/api";
+
+export class Delete${singularPascal}Handler implements Handler<Routes.${pascalName}.Delete> {
+  constructor(private ctx: AppContext) {}
+
+  async handle(input: Routes.${pascalName}.Delete.Input): Promise<Routes.${pascalName}.Delete.Output> {
+    const existing = await this.ctx.db
+      .selectFrom("${table}")
+      .where("id", "=", input.id)
+      .selectAll()
+      .executeTakeFirst();
+
+    if (!existing) {
+      throw this.ctx.errors.NotFound("${singularPascal} not found");
+    }
+
+    await this.ctx.db
+      .deleteFrom("${table}")
+      .where("id", "=", input.id)
+      .execute();
+
+    return { success: true };
+  }
+}
+`;
+    await Bun.write(join(featureDir, "handlers", "delete.handler.ts"), deleteHandler);
+    handlers.push("delete");
+  } else {
+    // Create a simple example handler
+    const exampleHandler = `import type { Handler, Routes, AppContext } from "$server/api";
+
+export class Get${singularPascal}Handler implements Handler<Routes.${pascalName}.Get> {
+  constructor(private ctx: AppContext) {}
+
+  async handle(input: Routes.${pascalName}.Get.Input): Promise<Routes.${pascalName}.Get.Output> {
+    // TODO: Implement your business logic
+    throw this.ctx.errors.NotFound("Not implemented");
+  }
+}
+`;
+    await Bun.write(join(featureDir, "handlers", "get.handler.ts"), exampleHandler);
+    handlers.push("get");
+  }
+
+  // 3. Create router (index.ts)
+  let handlerImports = "";
+  let routeDefinitions = "";
+
+  if (crud) {
+    handlerImports = `import { Create${singularPascal}Handler } from "./handlers/create.handler";
+import { List${pascalName}Handler } from "./handlers/list.handler";
+import { Get${singularPascal}Handler } from "./handlers/get.handler";
+import { Update${singularPascal}Handler } from "./handlers/update.handler";
+import { Delete${singularPascal}Handler } from "./handlers/delete.handler";`;
+
+    routeDefinitions = `
+  .route("create").typed({
+    input: create${singularPascal}Schema,
+    output: ${name.charAt(0).toLowerCase() + name.slice(1)}Schema,
+    handle: Create${singularPascal}Handler,
+  })
+
+  .route("list").typed({
+    input: list${pascalName}Schema,
+    output: ${name.charAt(0).toLowerCase() + name.slice(1)}Schema.array(),
+    handle: List${pascalName}Handler,
+  })
+
+  .route("get").typed({
+    input: get${singularPascal}Schema,
+    output: ${name.charAt(0).toLowerCase() + name.slice(1)}Schema,
+    handle: Get${singularPascal}Handler,
+  })
+
+  .route("update").typed({
+    input: update${singularPascal}Schema,
+    output: ${name.charAt(0).toLowerCase() + name.slice(1)}Schema,
+    handle: Update${singularPascal}Handler,
+  })
+
+  .route("delete").typed({
+    input: delete${singularPascal}Schema,
+    output: z.object({ success: z.boolean() }),
+    handle: Delete${singularPascal}Handler,
+  })`;
+  } else {
+    handlerImports = `import { Get${singularPascal}Handler } from "./handlers/get.handler";`;
+    routeDefinitions = `
+  .route("get").typed({
+    input: get${singularPascal}Schema,
+    output: ${name.charAt(0).toLowerCase() + name.slice(1)}Schema,
+    handle: Get${singularPascal}Handler,
+  })`;
+  }
+
+  const routerContent = `/**
+ * ${pascalName} Router
+ *
+ * Feature module following the recommended pattern:
+ * - Thin router (just wiring)
+ * - Handler classes with business logic
+ * - Schemas in separate file
+ */
+
+import { createRouter } from "@donkeylabs/server";
+import { z } from "zod";
+import {
+  create${singularPascal}Schema,
+  update${singularPascal}Schema,
+  get${singularPascal}Schema,
+  list${pascalName}Schema,
+  delete${singularPascal}Schema,
+  ${name.charAt(0).toLowerCase() + name.slice(1)}Schema,
+} from "./${name}.schemas";
+${handlerImports}
+
+export const ${name}Router = createRouter("${name}")${routeDefinitions};
+`;
+
+  await Bun.write(join(featureDir, "index.ts"), routerContent);
+
+  // 4. Create test file
+  const testContent = `import { describe, test, expect, beforeEach } from "bun:test";
+// import { createTestHarness } from "@donkeylabs/server/harness";
+// import { Get${singularPascal}Handler } from "./handlers/get.handler";
+
+describe("${pascalName}", () => {
+  // let ctx: AppContext;
+
+  // beforeEach(async () => {
+  //   const harness = await createTestHarness();
+  //   ctx = harness.ctx;
+  // });
+
+  test.todo("implement tests for ${name} handlers");
+
+  // Example test:
+  // test("get handler returns ${name.toLowerCase()}", async () => {
+  //   const handler = new Get${singularPascal}Handler(ctx);
+  //   const result = await handler.handle({ id: "test-id" });
+  //   expect(result.id).toBe("test-id");
+  // });
+});
+`;
+
+  await Bun.write(join(featureDir, `${name}.test.ts`), testContent);
+
+  // Build the result message
+  const filesCreated = [
+    `index.ts (router)`,
+    `${name}.schemas.ts (Zod schemas + types)`,
+    `${name}.test.ts (test file)`,
+    ...handlers.map(h => `handlers/${h}.handler.ts`),
+  ];
+
+  return `## Feature Scaffolded: ${name}
+
+**Location:** ${projectConfig.routesDir}/${name}/
+
+**Files created:**
+${filesCreated.map(f => `- ${f}`).join("\n")}
+
+### Register the Router
+
+Add to your server entry file:
+\`\`\`typescript
+import { ${name}Router } from "./${projectConfig.routesDir.replace("src/", "./")}/${name}";
+
+server.use(${name}Router);
+\`\`\`
+
+${crud ? `### Database Migration Required
+
+Since CRUD was enabled, you need a database table. Create a plugin with a migration:
+
+\`\`\`
+Tool: create_plugin
+  name: "${name}"
+  hasSchema: true
+\`\`\`
+
+Then add migration:
+\`\`\`
+Tool: add_migration
+  pluginName: "${name}"
+  migrationName: "create_${table}"
+  upCode: 'await db.schema.createTable("${table}").addColumn("id", "text", (col) => col.primaryKey())${parsedFields.map(f => `.addColumn("${f.name}", "${f.type === "number" ? "integer" : f.type === "boolean" ? "integer" : "text"}"${f.optional ? "" : ", (col) => col.notNull()"})`).join("")}.addColumn("created_at", "text", (col) => col.notNull()).addColumn("updated_at", "text", (col) => col.notNull()).execute();'
+\`\`\`
+
+After creating the migration, run:
+\`\`\`bash
+bunx donkeylabs generate
+\`\`\`
+` : ""}
+### Next Steps
+
+1. Register the router in your server
+2. ${crud ? "Create the database plugin and migration" : "Implement the handler business logic"}
+3. Run \`bunx donkeylabs generate\` to update types
+4. Add tests to \`${name}.test.ts\`
+
+### API Endpoints
+
+${crud ? `- \`${name}.create\` - Create a new ${name.toLowerCase()}
+- \`${name}.list\` - List all ${name.toLowerCase()}
+- \`${name}.get\` - Get ${name.toLowerCase()} by ID
+- \`${name}.update\` - Update ${name.toLowerCase()}
+- \`${name}.delete\` - Delete ${name.toLowerCase()}` : `- \`${name}.get\` - Get ${name.toLowerCase()} by ID`}
+`;
+}
+
 // =============================================================================
 // SERVER SETUP
 // =============================================================================
@@ -2630,6 +3114,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case "generate_client":
         result = await generateClient(args as { outputPath?: string });
+        break;
+      case "scaffold_feature":
+        result = await scaffoldFeature(args as Parameters<typeof scaffoldFeature>[0]);
         break;
       default:
         result = formatError(
