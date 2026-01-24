@@ -5,8 +5,10 @@ import { BunSqliteDialect } from "kysely-bun-sqlite";
 import { Database } from "bun:sqlite";
 import { demoPlugin } from "./plugins/demo";
 import { workflowDemoPlugin } from "./plugins/workflow-demo";
+import { authPlugin } from "./plugins/auth";
 import demoRoutes from "./routes/demo";
 import { exampleRouter } from "./routes/example";
+import { authRouter } from "./routes/auth";
 
 // Simple in-memory database
 const db = new Kysely<{}>({
@@ -23,10 +25,12 @@ export const server = new AppServer({
 });
 
 // Register plugins
+server.registerPlugin(authPlugin);  // Auth first - other plugins may depend on it
 server.registerPlugin(demoPlugin);
 server.registerPlugin(workflowDemoPlugin);
 
 // Register routes
+server.use(authRouter);
 server.use(demoRoutes);
 server.use(exampleRouter);
 
