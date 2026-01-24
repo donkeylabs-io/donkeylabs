@@ -25,6 +25,23 @@ export interface SSESubscription {
 }
 
 /**
+ * SSE options for connection configuration.
+ * Compatible with @donkeylabs/server/client SSEOptions.
+ */
+export interface SSEOptions {
+  /** Called when connection is established */
+  onConnect?: () => void;
+  /** Called when connection is lost */
+  onDisconnect?: () => void;
+  /** Called on connection error */
+  onError?: (error: Event) => void;
+  /** Auto-reconnect on disconnect (default: true) */
+  autoReconnect?: boolean;
+  /** Reconnect delay in ms (default: 3000) */
+  reconnectDelay?: number;
+}
+
+/**
  * Type-safe SSE connection wrapper.
  * Provides typed event handlers with automatic JSON parsing.
  *
@@ -89,6 +106,29 @@ export class SSEConnection<TEvents extends Record<string, any> = Record<string, 
         handlers.delete(handler);
       }
     };
+  }
+
+  /**
+   * Register a typed event handler that fires only once.
+   * @returns Unsubscribe function to remove this specific handler
+   */
+  once<K extends keyof TEvents>(
+    event: K & string,
+    handler: (data: TEvents[K]) => void
+  ): () => void {
+    const wrappedHandler = (data: TEvents[K]) => {
+      unsubscribe();
+      handler(data);
+    };
+    const unsubscribe = this.on(event, wrappedHandler);
+    return unsubscribe;
+  }
+
+  /**
+   * Remove all handlers for an event.
+   */
+  off<K extends keyof TEvents>(event: K & string): void {
+    this.handlers.delete(event);
   }
 
   /**
@@ -305,6 +345,21 @@ export class UnifiedApiClientBase {
     }
 
     return new SSEConnection<TEvents>(url);
+  }
+
+  /**
+   * Connect to a specific SSE route endpoint.
+   * Alias for sseConnect() - provides compatibility with @donkeylabs/server generated clients.
+   * @returns SSE connection with typed event handlers
+   */
+  protected connectToSSERoute<TEvents extends Record<string, any>>(
+    route: string,
+    input: Record<string, any> = {},
+    _options?: Omit<SSEOptions, "endpoint" | "channels">
+  ): SSEConnection<TEvents> {
+    // Note: options (onConnect, onDisconnect, etc.) are not used by SSEConnection
+    // but we accept them for API compatibility with @donkeylabs/server/client
+    return this.sseConnect<Record<string, any>, TEvents>(route, input);
   }
 
   /**
