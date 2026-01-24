@@ -1,5 +1,13 @@
 # @donkeylabs/server
 
+## 2.0.4
+
+### Patch Changes
+
+- Fix SSE client cleanup on connection abort
+
+  The SSE handler now registers a cleanup listener on `req.signal.abort` to properly remove the SSE client when the connection is closed. This prevents orphaned SSE clients from accumulating and ensures proper resource cleanup.
+
 ## 2.0.3
 
 ## 2.0.2

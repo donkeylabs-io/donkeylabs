@@ -194,6 +194,11 @@ export const SSEHandler: SSEHandler = {
         ctx.core.sse.subscribe(client.id, channel);
       }
 
+      // Clean up client when connection is aborted
+      req.signal.addEventListener("abort", () => {
+        ctx.core.sse.removeClient(client.id);
+      });
+
       return response;
     } catch (e: any) {
       console.error(e);
