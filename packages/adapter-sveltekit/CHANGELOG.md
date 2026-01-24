@@ -1,5 +1,20 @@
 # @donkeylabs/adapter-sveltekit
 
+## 2.0.0
+
+### Patch Changes
+
+- d273351: Add server-level events with typed emit/on
+
+  - Add `defineEvents()` helper for declaring typed events at server level
+  - Add `EventRegistry` interface for module augmentation
+  - Update Events interface with typed overloads for emit/on/once
+  - Generate events.ts with namespace-nested types (Order.Created, User.Signup)
+  - Fix missing RequestOptions import in SvelteKit adapter client generator
+
+- Updated dependencies [d273351]
+  - @donkeylabs/server@2.0.0
+
 ## 1.0.0
 
 ### Minor Changes
