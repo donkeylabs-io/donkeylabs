@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/adapter-sveltekit",
-  "version": "2.0.5",
+  "version": "2.0.6",
   "type": "module",
   "description": "SvelteKit adapter for @donkeylabs/server - seamless SSR/browser API integration",
   "main": "./src/index.ts",
@@ -37,7 +37,7 @@
   },
   "peerDependencies": {
     "@sveltejs/kit": "^2.0.0",
-    "@donkeylabs/server": "^2.0.5"
+    "@donkeylabs/server": "^2.0.6"
   },
   "keywords": [
     "sveltekit",

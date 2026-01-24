@@ -23,6 +23,7 @@ interface Logger {
   warn(message: string, data?: Record<string, any>): void;
   error(message: string, data?: Record<string, any>): void;
   child(context: Record<string, any>): Logger;
+  tag(name: string): Logger;  // Create tagged child logger
 }
 ```
 
@@ -81,23 +82,62 @@ router.route("checkout").typed({
 });
 ```
 
+### Tagged Loggers
+
+Tags add colored prefixes to log messages for visual organization. Each tag gets a consistent color.
+
+```ts
+// Create tagged logger
+const dbLog = ctx.core.logger.tag("database");
+dbLog.info("Query executed");
+// Output: 12:34:56.789 INFO  [database] Query executed
+
+// Chain multiple tags
+const queryLog = dbLog.tag("slow-query");
+queryLog.warn("Query took 5s", { table: "orders" });
+// Output: 12:34:56.790 WARN  [database] [slow-query] Query took 5s {"table":"orders"}
+```
+
+**Plugin Auto-Tagging:** Plugins automatically get a tagged logger with the plugin name:
+
+```ts
+// In plugin service - ctx.core.logger is auto-tagged with plugin name
+export const ordersPlugin = createPlugin.define({
+  name: "orders",
+  service: async (ctx) => {
+    // Logger is already tagged with [orders]
+    ctx.core.logger.info("Plugin initialized");
+    // Output: 12:34:56.789 INFO  [orders] Plugin initialized
+
+    // Add additional tags as needed
+    const paymentLog = ctx.core.logger.tag("payments");
+    paymentLog.info("Processing");
+    // Output: 12:34:56.790 INFO  [orders] [payments] Processing
+
+    return {
+      create: async (data) => {
+        ctx.core.logger.info("Creating order", { total: data.total });
+        // Output: 12:34:56.791 INFO  [orders] Creating order {"total":100}
+      },
+    };
+  },
+});
+```
+
 ### Child Loggers
 
-Child loggers inherit parent settings and add persistent context:
+Child loggers inherit parent settings and add persistent context data (not visible as tags):
 
 ```ts
 // In plugin initialization
 service: async (ctx) => {
-  // Create logger with plugin context
-  const log = ctx.core.logger.child({ plugin: "payments" });
-
   return {
     async processPayment(orderId: string) {
-      // Create request-specific logger
-      const requestLog = log.child({ orderId });
+      // Create request-specific logger with context
+      const requestLog = ctx.core.logger.child({ orderId });
 
       requestLog.info("Processing payment");
-      // Logs: { plugin: "payments", orderId: "123", ... }
+      // Output: 12:34:56.789 INFO  [payments] Processing payment {"orderId":"123"}
 
       requestLog.debug("Validating card");
       requestLog.info("Payment complete");
@@ -146,20 +186,24 @@ const requestLogger = createMiddleware(async (req, ctx, next) => {
 
 ### Pretty Format (Default)
 
-Human-readable colored output for development:
+Human-readable colored output for development. Tags appear as colored `[tag]` prefixes:
 
 ```
-[12:34:56.789] INFO  User logged in {"userId":123}
-[12:34:56.790] ERROR Payment failed {"orderId":456,"error":"Insufficient funds"}
+12:34:56.789 INFO  User logged in {"userId":123}
+12:34:56.790 ERROR [orders] Payment failed {"orderId":456,"error":"Insufficient funds"}
+12:34:56.791 WARN  [orders] [payments] Retry attempt {"attempt":3}
 ```
+
+Each tag gets a consistent color (cyan, magenta, green, yellow, blue, red) that persists across the application lifetime.
 
 ### JSON Format
 
-Structured JSON for production log aggregation:
+Structured JSON for production log aggregation. Tags are included as an array:
 
 ```json
 {"timestamp":"2024-01-15T12:34:56.789Z","level":"info","message":"User logged in","userId":123}
-{"timestamp":"2024-01-15T12:34:56.790Z","level":"error","message":"Payment failed","orderId":456,"error":"Insufficient funds"}
+{"timestamp":"2024-01-15T12:34:56.790Z","level":"error","message":"Payment failed","tags":["orders"],"orderId":456,"error":"Insufficient funds"}
+{"timestamp":"2024-01-15T12:34:56.791Z","level":"warn","message":"Retry attempt","tags":["orders","payments"],"attempt":3}
 ```
 
 ---
@@ -296,6 +340,7 @@ interface LogEntry {
   timestamp: Date;
   level: "debug" | "info" | "warn" | "error";
   message: string;
+  tags?: string[];                // From tag() - displayed as colored prefixes
   data?: Record<string, any>;     // Per-call data
   context?: Record<string, any>;  // From child logger
 }

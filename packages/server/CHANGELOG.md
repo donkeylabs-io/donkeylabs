@@ -1,5 +1,17 @@
 # @donkeylabs/server
 
+## 2.0.6
+
+### Patch Changes
+
+- Add tagged loggers with colored prefixes and auto-tagging for plugins
+
+  - Logger now supports `tag(name: string)` method to create tagged child loggers
+  - Tags appear as colored `[tagName]` prefixes in pretty format
+  - Each tag gets a consistent color (cycles through cyan, magenta, green, yellow, blue, red)
+  - Plugins automatically get a logger tagged with the plugin name
+  - Tags are included as an array in JSON format
+
 ## 2.0.5
 
 ### Patch Changes

@@ -157,14 +157,34 @@ export interface GlobalContext {
 }
 
 export class PluginContext<Deps = any, Schema = any, Config = void> {
+  private _core: CoreServices;
+  private _taggedCore?: CoreServices;
+  private _pluginName?: string;
+
   constructor(
-    public readonly core: CoreServices,
+    core: CoreServices,
     public readonly deps: Deps,
-    public readonly config: Config
-  ) {}
+    public readonly config: Config,
+    pluginName?: string
+  ) {
+    this._core = core;
+    this._pluginName = pluginName;
+  }
+
+  /** Core services with auto-tagged logger for the plugin */
+  get core(): CoreServices {
+    // Lazily create tagged core services
+    if (!this._taggedCore && this._pluginName) {
+      this._taggedCore = {
+        ...this._core,
+        logger: this._core.logger.tag(this._pluginName),
+      };
+    }
+    return this._taggedCore || this._core;
+  }
 
   get db(): Kysely<Schema> {
-    return this.core.db as unknown as Kysely<Schema>;
+    return this._core.db as unknown as Kysely<Schema>;
   }
 }
 
@@ -676,7 +696,7 @@ export class PluginManager {
         }
 
         const pluginConfig = (plugin as ConfiguredPlugin)._boundConfig;
-        const ctx = new PluginContext(this.core, pluginDeps, pluginConfig);
+        const ctx = new PluginContext(this.core, pluginDeps, pluginConfig, plugin.name);
         const service = await plugin.service(ctx);
 
         if (service) {
