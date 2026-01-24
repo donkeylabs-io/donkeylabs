@@ -1,17 +1,14 @@
-import type { Handler, Routes, AppContext } from "$server/api";
-
 /**
  * Logout Handler - Invalidate current session/token
  */
-export class LogoutHandler implements Handler<Routes.Auth.Logout> {
-  constructor(private ctx: AppContext) {}
+export class LogoutHandler {
+  constructor(private ctx: any) {}
 
-  async handle(_input: Routes.Auth.Logout.Input): Promise<Routes.Auth.Logout.Output> {
-    // Get token from request context (set by auth middleware)
-    const token = (this.ctx as any).token;
+  async handle(_input: Record<string, never>) {
+    const token = this.ctx.token;
 
     if (token) {
-      await this.ctx.plugins.auth.logout(token);
+      await (this.ctx.plugins as any).auth.logout(token);
     }
 
     return { success: true };

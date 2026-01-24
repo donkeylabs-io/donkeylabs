@@ -26,7 +26,8 @@
  * ```
  */
 
-import { createApi } from "./api";
+// Note: createApi is imported dynamically to avoid compile-time dependency
+// on the generated API file which may not have permissions routes yet
 
 export interface PermissionContext {
   tenantId: string;
@@ -78,9 +79,16 @@ export interface PermissionsHelper {
 /**
  * Create a permissions helper from context
  */
-export function createPermissions(context: PermissionContext): PermissionsHelper {
+export function createPermissions(context: PermissionContext, api?: any): PermissionsHelper {
   const permissionSet = new Set(context.permissions);
-  const api = createApi();
+
+  // Lazy load API if not provided
+  const getApi = () => {
+    if (api) return api;
+    // Dynamic import to avoid compile-time dependency
+    const { createApi } = require("./api");
+    return createApi();
+  };
 
   return {
     has(permission: string): boolean {
@@ -129,7 +137,8 @@ export function createPermissions(context: PermissionContext): PermissionsHelper
       action: "create" | "read" | "write" | "delete" | "admin",
       ownerId?: string
     ): Promise<boolean> {
-      const result = await api.permissions.canAccess({
+      const apiClient = getApi();
+      const result = await apiClient.permissions.canAccess({
         tenantId: context.tenantId,
         checks: [{ resourceType, resourceId, action, ownerId }],
       });
@@ -144,7 +153,8 @@ export function createPermissions(context: PermissionContext): PermissionsHelper
         ownerId?: string;
       }>
     ): Promise<Record<string, boolean>> {
-      return api.permissions.canAccess({
+      const apiClient = getApi();
+      return apiClient.permissions.canAccess({
         tenantId: context.tenantId,
         checks,
       });

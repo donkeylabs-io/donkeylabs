@@ -31,7 +31,7 @@ permissions.route("context").typed(
         throw ctx.errors.Unauthorized("Authentication required");
       }
 
-      return ctx.plugins.permissions.getClientContext(ctx.user.id, input.tenantId);
+      return (ctx.plugins as any).permissions.getClientContext(ctx.user.id, input.tenantId);
     },
   })
 );
@@ -55,7 +55,7 @@ permissions.route("check").typed(
       const results: Record<string, boolean> = {};
 
       for (const permission of input.permissions) {
-        results[permission] = await ctx.plugins.permissions.hasPermission(
+        results[permission] = await (ctx.plugins as any).permissions.hasPermission(
           ctx.user.id,
           input.tenantId,
           permission
@@ -92,7 +92,7 @@ permissions.route("canAccess").typed(
 
       for (const check of input.checks) {
         const key = `${check.resourceType}:${check.resourceId}:${check.action}`;
-        results[key] = await ctx.plugins.permissions.canAccess(
+        results[key] = await (ctx.plugins as any).permissions.canAccess(
           ctx.user.id,
           input.tenantId,
           check.resourceType,
@@ -131,7 +131,7 @@ permissions.route("grants").typed(
       }
 
       // Check if user can admin this resource (to see grants)
-      const canAdmin = await ctx.plugins.permissions.canAccess(
+      const canAdmin = await (ctx.plugins as any).permissions.canAccess(
         ctx.user.id,
         input.tenantId,
         input.resourceType,
@@ -143,7 +143,7 @@ permissions.route("grants").typed(
         throw ctx.errors.Forbidden("Cannot view grants for this resource");
       }
 
-      return ctx.plugins.permissions.getResourceGrants(
+      return (ctx.plugins as any).permissions.getResourceGrants(
         input.tenantId,
         input.resourceType,
         input.resourceId
@@ -172,7 +172,7 @@ permissions.route("grant").typed(
       }
 
       // Check if user can admin this resource
-      const canAdmin = await ctx.plugins.permissions.canAccess(
+      const canAdmin = await (ctx.plugins as any).permissions.canAccess(
         ctx.user.id,
         input.tenantId,
         input.resourceType,
@@ -184,7 +184,7 @@ permissions.route("grant").typed(
         throw ctx.errors.Forbidden("Cannot grant access to this resource");
       }
 
-      await ctx.plugins.permissions.grantAccess({
+      await (ctx.plugins as any).permissions.grantAccess({
         tenantId: input.tenantId,
         resourceType: input.resourceType,
         resourceId: input.resourceId,
@@ -219,7 +219,7 @@ permissions.route("revoke").typed(
       }
 
       // Check if user can admin this resource
-      const canAdmin = await ctx.plugins.permissions.canAccess(
+      const canAdmin = await (ctx.plugins as any).permissions.canAccess(
         ctx.user.id,
         input.tenantId,
         input.resourceType,
@@ -231,7 +231,7 @@ permissions.route("revoke").typed(
         throw ctx.errors.Forbidden("Cannot revoke access to this resource");
       }
 
-      await ctx.plugins.permissions.revokeAccess({
+      await (ctx.plugins as any).permissions.revokeAccess({
         tenantId: input.tenantId,
         resourceType: input.resourceType,
         resourceId: input.resourceId,

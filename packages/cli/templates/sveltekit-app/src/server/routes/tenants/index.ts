@@ -24,7 +24,7 @@ tenants.route("mine").typed(
         throw ctx.errors.Unauthorized("Authentication required");
       }
 
-      return ctx.plugins.permissions.getUserTenants(ctx.user.id);
+      return (ctx.plugins as any).permissions.getUserTenants(ctx.user.id);
     },
   })
 );
@@ -51,12 +51,12 @@ tenants.route("create").typed(
       }
 
       // Check if slug is taken
-      const existing = await ctx.plugins.permissions.getTenantBySlug(input.slug);
+      const existing = await (ctx.plugins as any).permissions.getTenantBySlug(input.slug);
       if (existing) {
         throw ctx.errors.BadRequest("Tenant slug already taken");
       }
 
-      return ctx.plugins.permissions.createTenant({
+      return (ctx.plugins as any).permissions.createTenant({
         name: input.name,
         slug: input.slug,
         ownerId: ctx.user.id,
@@ -86,12 +86,12 @@ tenants.route("get").typed(
       }
 
       // Verify membership
-      const isMember = await ctx.plugins.permissions.isTenantMember(ctx.user.id, input.tenantId);
+      const isMember = await (ctx.plugins as any).permissions.isTenantMember(ctx.user.id, input.tenantId);
       if (!isMember) {
         throw ctx.errors.Forbidden("Not a member of this tenant");
       }
 
-      return ctx.plugins.permissions.getTenant(input.tenantId);
+      return (ctx.plugins as any).permissions.getTenant(input.tenantId);
     },
   })
 );
@@ -118,13 +118,13 @@ tenants.route("roles").typed(
       }
 
       // Verify membership
-      const isMember = await ctx.plugins.permissions.isTenantMember(ctx.user.id, input.tenantId);
+      const isMember = await (ctx.plugins as any).permissions.isTenantMember(ctx.user.id, input.tenantId);
       if (!isMember) {
         throw ctx.errors.Forbidden("Not a member of this tenant");
       }
 
-      const roles = await ctx.plugins.permissions.getTenantRoles(input.tenantId);
-      return roles.map(r => ({
+      const roles = await (ctx.plugins as any).permissions.getTenantRoles(input.tenantId);
+      return roles.map((r: any) => ({
         id: r.id,
         name: r.name,
         description: r.description,
@@ -163,7 +163,7 @@ tenants.route("createRole").typed(
       }
 
       // Check admin permission
-      const hasAdmin = await ctx.plugins.permissions.hasPermission(
+      const hasAdmin = await (ctx.plugins as any).permissions.hasPermission(
         ctx.user.id,
         input.tenantId,
         "roles.manage"
@@ -172,7 +172,7 @@ tenants.route("createRole").typed(
         throw ctx.errors.Forbidden("Cannot manage roles");
       }
 
-      const role = await ctx.plugins.permissions.createRole({
+      const role = await (ctx.plugins as any).permissions.createRole({
         tenantId: input.tenantId,
         name: input.name,
         description: input.description,
@@ -209,7 +209,7 @@ tenants.route("addMember").typed(
       }
 
       // Check permission
-      const canInvite = await ctx.plugins.permissions.hasPermission(
+      const canInvite = await (ctx.plugins as any).permissions.hasPermission(
         ctx.user.id,
         input.tenantId,
         "members.invite"
@@ -218,7 +218,7 @@ tenants.route("addMember").typed(
         throw ctx.errors.Forbidden("Cannot invite members");
       }
 
-      await ctx.plugins.permissions.addTenantMember(
+      await (ctx.plugins as any).permissions.addTenantMember(
         input.tenantId,
         input.userId,
         ctx.user.id
@@ -245,7 +245,7 @@ tenants.route("removeMember").typed(
       }
 
       // Check permission
-      const canRemove = await ctx.plugins.permissions.hasPermission(
+      const canRemove = await (ctx.plugins as any).permissions.hasPermission(
         ctx.user.id,
         input.tenantId,
         "members.remove"
@@ -254,7 +254,7 @@ tenants.route("removeMember").typed(
         throw ctx.errors.Forbidden("Cannot remove members");
       }
 
-      await ctx.plugins.permissions.removeTenantMember(input.tenantId, input.userId);
+      await (ctx.plugins as any).permissions.removeTenantMember(input.tenantId, input.userId);
 
       return { success: true };
     },
@@ -278,7 +278,7 @@ tenants.route("assignRole").typed(
       }
 
       // Check permission
-      const canManage = await ctx.plugins.permissions.hasPermission(
+      const canManage = await (ctx.plugins as any).permissions.hasPermission(
         ctx.user.id,
         input.tenantId,
         "roles.assign"
@@ -287,7 +287,7 @@ tenants.route("assignRole").typed(
         throw ctx.errors.Forbidden("Cannot assign roles");
       }
 
-      await ctx.plugins.permissions.assignRole(
+      await (ctx.plugins as any).permissions.assignRole(
         input.userId,
         input.roleId,
         input.tenantId,
@@ -316,7 +316,7 @@ tenants.route("revokeRole").typed(
       }
 
       // Check permission
-      const canManage = await ctx.plugins.permissions.hasPermission(
+      const canManage = await (ctx.plugins as any).permissions.hasPermission(
         ctx.user.id,
         input.tenantId,
         "roles.assign"
@@ -325,7 +325,7 @@ tenants.route("revokeRole").typed(
         throw ctx.errors.Forbidden("Cannot revoke roles");
       }
 
-      await ctx.plugins.permissions.revokeRole(
+      await (ctx.plugins as any).permissions.revokeRole(
         input.userId,
         input.roleId,
         input.tenantId

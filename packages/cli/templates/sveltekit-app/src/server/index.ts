@@ -59,7 +59,7 @@ export const server = new AppServer({
 // =============================================================================
 
 // Using default session strategy for this template
-server.registerPlugin(authPlugin());
+server.registerPlugin(authPlugin({}));
 
 // Email plugin - supports Resend or console (for development)
 // Configure with process.env.RESEND_API_KEY for production

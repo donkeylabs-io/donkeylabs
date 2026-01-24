@@ -7,7 +7,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 
   try {
     // Load initial workflow instances
-    const result = await client.api.workflow.list({});
+    const result = await (client as any).demo.workflow.list({});
     return {
       instances: result.instances || [],
       loadedAt: new Date().toISOString(),

@@ -159,7 +159,7 @@ export const permissionsPlugin = <
     [K in keyof TPermissions]: `${K & string}.${TPermissions[K][number]}`;
   }[keyof TPermissions];
 
-  return createPlugin
+  const factory = createPlugin
     .withSchema<PermissionsSchema>()
     .withConfig<PermissionsConfig<TPermissions>>()
     .define({
@@ -644,7 +644,7 @@ export const permissionsPlugin = <
         ): Promise<void> {
           const has = await hasPermission(userId, tenantId, permission);
           if (!has) {
-            throw ctx.errors.PermissionDenied(`Missing permission: ${permission}`);
+            throw ctx.core.errors.Forbidden(`Missing permission: ${permission}`);
           }
         }
 
@@ -829,7 +829,7 @@ export const permissionsPlugin = <
         ): Promise<void> {
           const can = await canAccess(userId, tenantId, resourceType, resourceId, action, ownerId);
           if (!can) {
-            throw ctx.errors.ResourceAccessDenied(
+            throw ctx.core.errors.Forbidden(
               `Cannot ${action} ${resourceType}:${resourceId}`
             );
           }
@@ -984,8 +984,8 @@ export const permissionsPlugin = <
               }
             }
 
-            reqCtx.tenant = tenant;
-            reqCtx.tenantId = tenant.id;
+            (reqCtx as any).tenant = tenant;
+            (reqCtx as any).tenantId = tenant.id;
             return next();
           }
         ),
@@ -1002,7 +1002,7 @@ export const permissionsPlugin = <
               );
             }
 
-            if (!reqCtx.tenantId) {
+            if (!(reqCtx as any).tenantId) {
               return Response.json(
                 { error: "Tenant context required", code: "TENANT_REQUIRED" },
                 { status: 400 }
@@ -1016,7 +1016,7 @@ export const permissionsPlugin = <
             for (const permission of required) {
               const has = await service.hasPermission(
                 reqCtx.user.id,
-                reqCtx.tenantId,
+                (reqCtx as any).tenantId,
                 permission
               );
               if (!has) {
@@ -1042,4 +1042,7 @@ export const permissionsPlugin = <
         });
       },
     });
+
+  // Call factory with config to get the actual Plugin
+  return factory(config);
 };

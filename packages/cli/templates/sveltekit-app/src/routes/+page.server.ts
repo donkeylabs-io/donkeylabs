@@ -8,7 +8,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 
   try {
     // Direct service call through typed client
-    const result = await client.api.counter.get({});
+    const result = await (client as any).demo.counter.get({});
     return {
       count: result.count,
       loadedAt: new Date().toISOString(),

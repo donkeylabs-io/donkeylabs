@@ -475,7 +475,7 @@ export const authPlugin = createPlugin
             .executeTakeFirst();
 
           if (existing) {
-            throw ctx.errors.EmailAlreadyExists();
+            throw ctx.core.errors.BadRequest();
           }
 
           const passwordHash = await Bun.password.hash(password, {
@@ -527,12 +527,12 @@ export const authPlugin = createPlugin
             .executeTakeFirst();
 
           if (!dbUser) {
-            throw ctx.errors.InvalidCredentials();
+            throw ctx.core.errors.Unauthorized();
           }
 
           const valid = await Bun.password.verify(password, dbUser.password_hash);
           if (!valid) {
-            throw ctx.errors.InvalidCredentials();
+            throw ctx.core.errors.Unauthorized();
           }
 
           const user: AuthUser = {
@@ -558,7 +558,7 @@ export const authPlugin = createPlugin
 
           const payload = await verifyJWT(refreshToken, jwtSecret);
           if (!payload || payload.type !== "refresh") {
-            throw ctx.errors.InvalidToken();
+            throw ctx.core.errors.Unauthorized();
           }
 
           // Verify refresh token exists in DB (not revoked)
@@ -577,7 +577,7 @@ export const authPlugin = createPlugin
           }
 
           if (!validToken) {
-            throw ctx.errors.RefreshTokenExpired();
+            throw ctx.core.errors.Unauthorized();
           }
 
           // Get user
@@ -588,7 +588,7 @@ export const authPlugin = createPlugin
             .executeTakeFirst();
 
           if (!user) {
-            throw ctx.errors.InvalidToken();
+            throw ctx.core.errors.Unauthorized();
           }
 
           // Create new access token (keep same refresh token)
@@ -691,7 +691,7 @@ export const authPlugin = createPlugin
               .executeTakeFirst();
 
             if (existing) {
-              throw ctx.errors.EmailAlreadyExists();
+              throw ctx.core.errors.BadRequest();
             }
 
             updates.email = data.email.toLowerCase();

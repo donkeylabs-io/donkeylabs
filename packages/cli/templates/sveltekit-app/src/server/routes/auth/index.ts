@@ -5,9 +5,9 @@
  * - auth.register - Create new account
  * - auth.login - Login and get tokens
  * - auth.refresh - Refresh access token (refresh-token strategy only)
- * - auth.logout - Invalidate session/token (requires auth)
- * - auth.me - Get current user (optional auth)
- * - auth.updateProfile - Update profile (requires auth)
+ * - auth.logout - Invalidate session/token
+ * - auth.me - Get current user
+ * - auth.updateProfile - Update profile
  */
 
 import { createRouter } from "@donkeylabs/server";
@@ -51,22 +51,21 @@ export const authRouter = createRouter("auth")
     handle: RefreshHandler,
   })
 
-  // Optional auth - returns user if logged in, null otherwise
-  .middleware.auth({ required: false })
+  // Get current user (returns null if not authenticated)
   .route("me").typed({
     input: z.object({}),
     output: userSchema.nullable(),
     handle: MeHandler,
   })
 
-  // Protected routes - require authentication
-  .middleware.auth({ required: true })
+  // Logout (invalidate session/token)
   .route("logout").typed({
     input: z.object({}),
     output: logoutResponseSchema,
     handle: LogoutHandler,
   })
 
+  // Update profile
   .route("updateProfile").typed({
     input: updateProfileSchema,
     output: userSchema,
