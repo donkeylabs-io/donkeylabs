@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/server",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "type": "module",
   "description": "Type-safe plugin system for building RPC-style APIs with Bun",
   "main": "./src/index.ts",
