@@ -1,5 +1,12 @@
 # @donkeylabs/mcp
 
+## 2.0.0
+
+### Patch Changes
+
+- Updated dependencies [d273351]
+  - @donkeylabs/server@2.0.0
+
 ## 1.0.0
 
 ### Minor Changes
