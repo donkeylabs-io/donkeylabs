@@ -67,6 +67,26 @@ export interface CoreServices {
  * Global context interface used in route handlers.
  * The `plugins` property is typed via PluginRegistry augmentation.
  */
+/**
+ * Registry for custom user services.
+ * Augment this interface to add typed services:
+ *
+ * @example
+ * ```ts
+ * // In your app's types file
+ * declare module "@donkeylabs/server" {
+ *   interface ServiceRegistry {
+ *     nvr: NVR;
+ *     analytics: AnalyticsService;
+ *   }
+ * }
+ *
+ * // Now ctx.services.nvr is typed
+ * ```
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface ServiceRegistry {}
+
 export interface GlobalContext {
   /** Database instance */
   db: Kysely<any>;
@@ -80,6 +100,8 @@ export interface GlobalContext {
   errors: Errors;
   /** Application config */
   config: Record<string, any>;
+  /** Custom user-registered services - typed via ServiceRegistry augmentation */
+  services: ServiceRegistry & Record<string, any>;
   /** Client IP address */
   ip: string;
   /** Unique request ID */

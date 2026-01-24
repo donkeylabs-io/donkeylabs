@@ -51,12 +51,10 @@ export class KyselyJobAdapter implements JobAdapter {
     this.db = db as Kysely<Database>;
     this.cleanupDays = config.cleanupDays ?? 7;
 
-    // Start cleanup timer
+    // Start cleanup timer (don't run immediately - tables may not exist yet before migrations)
     if (this.cleanupDays > 0) {
       const interval = config.cleanupInterval ?? 3600000; // 1 hour
       this.cleanupTimer = setInterval(() => this.cleanup(), interval);
-      // Run cleanup on startup
-      this.cleanup();
     }
   }
 
@@ -277,7 +275,9 @@ export class KyselyJobAdapter implements JobAdapter {
       if (numDeleted > 0) {
         console.log(`[Jobs] Cleaned up ${numDeleted} old jobs`);
       }
-    } catch (err) {
+    } catch (err: any) {
+      // Silently ignore "no such table" errors - table may not exist yet before migrations run
+      if (err?.message?.includes("no such table")) return;
       console.error("[Jobs] Cleanup error:", err);
     }
   }

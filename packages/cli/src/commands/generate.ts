@@ -83,6 +83,110 @@ async function extractMiddlewareNames(pluginPath: string): Promise<string[]> {
   }
 }
 
+interface ServiceDefinitionInfo {
+  name: string;
+  exportName: string;
+  filePath: string;
+  returnType: string | null;
+}
+
+/**
+ * Extract defineService calls from source files.
+ * Looks for patterns like: export const myService = defineService("name", ...)
+ */
+async function extractServiceDefinitions(filePath: string): Promise<ServiceDefinitionInfo[]> {
+  try {
+    const content = await readFile(filePath, "utf-8");
+    const services: ServiceDefinitionInfo[] = [];
+
+    // Match: export const serviceName = defineService("name", ...)
+    // Also try to capture return type annotation if present
+    const pattern = /export\s+const\s+(\w+)\s*=\s*defineService\s*\(\s*["'](\w+)["']/g;
+
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      const exportName = match[1] || "";
+      const serviceName = match[2] || "";
+
+      // Try to find return type from explicit annotation or factory return
+      // Look for patterns like: defineService<"name", NVRService>(...) or ): Promise<NVR> =>
+      let returnType: string | null = null;
+
+      // Check for generic type parameter: defineService<"name", ReturnType>
+      const genericMatch = content.slice(match.index).match(
+        /defineService\s*<\s*["']\w+["']\s*,\s*([^>]+)>/
+      );
+      if (genericMatch?.[1]) {
+        returnType = genericMatch[1].trim();
+      }
+
+      // Check for return type annotation on the factory: (ctx): Promise<Type> =>
+      if (!returnType) {
+        const factoryMatch = content.slice(match.index, match.index + 500).match(
+          /,\s*(?:async\s*)?\([^)]*\)\s*(?::\s*(?:Promise\s*<\s*)?([A-Z]\w+))?/
+        );
+        if (factoryMatch?.[1]) {
+          returnType = factoryMatch[1].trim();
+        }
+      }
+
+      services.push({
+        name: serviceName,
+        exportName,
+        filePath,
+        returnType,
+      });
+    }
+
+    return services;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Find all service definitions in the project.
+ * Scans common locations: server entry, services directory, etc.
+ */
+async function findServiceDefinitions(entryPath: string, servicesPattern?: string): Promise<ServiceDefinitionInfo[]> {
+  const allServices: ServiceDefinitionInfo[] = [];
+
+  // Scan the entry file
+  const entryFullPath = join(process.cwd(), entryPath);
+  if (existsSync(entryFullPath)) {
+    const entryServices = await extractServiceDefinitions(entryFullPath);
+    allServices.push(...entryServices);
+  }
+
+  // Scan services directory if it exists
+  const servicesDir = join(process.cwd(), "src/server/services");
+  if (existsSync(servicesDir)) {
+    const entries = await readdir(servicesDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith(".ts")) {
+        const filePath = join(servicesDir, entry.name);
+        const services = await extractServiceDefinitions(filePath);
+        allServices.push(...services);
+      }
+    }
+  }
+
+  // Also check src/lib/services for SvelteKit projects
+  const libServicesDir = join(process.cwd(), "src/lib/services");
+  if (existsSync(libServicesDir)) {
+    const entries = await readdir(libServicesDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith(".ts")) {
+        const filePath = join(libServicesDir, entry.name);
+        const services = await extractServiceDefinitions(filePath);
+        allServices.push(...services);
+      }
+    }
+  }
+
+  return allServices;
+}
+
 interface ExtractedRoute {
   name: string;
   handler: string;
@@ -519,9 +623,18 @@ export async function generateCommand(_args: string[]): Promise<void> {
   const entryPath = config.entry || "./src/index.ts";
   const serverRoutes = await extractRoutesFromServer(entryPath);
 
+  // Find custom service definitions
+  const services = await findServiceDefinitions(entryPath);
+  if (services.length > 0) {
+    console.log(
+      pc.green("Found services:"),
+      services.map((s) => pc.dim(s.name)).join(", ")
+    );
+  }
+
   // Generate all files
   await generateRegistry(plugins, outPath);
-  await generateContext(plugins, outPath);
+  await generateContext(plugins, services, outPath);
   await generateRouteTypes(fileRoutes, outPath);
 
   const generated = ["registry", "context", "routes"];
@@ -668,21 +781,56 @@ ${middlewareBuilderMethods}
 
 async function generateContext(
   plugins: { name: string; path: string; exportName: string }[],
+  services: ServiceDefinitionInfo[],
   outPath: string
 ) {
   const schemaIntersection =
     plugins.map((p) => `PluginRegistry["${p.name}"]["schema"]`).join(" & ") ||
     "{}";
 
+  // Generate service imports and type entries
+  const serviceImports: string[] = [];
+  const serviceEntries: string[] = [];
+
+  for (const service of services) {
+    // Calculate relative path from outPath to service file
+    const serviceAbsPath = service.filePath.replace(/\.ts$/, "");
+    const relativePath = relative(outPath, serviceAbsPath);
+    const importPath = relativePath.startsWith(".") ? relativePath : `./${relativePath}`;
+
+    serviceImports.push(`import type { ${service.exportName} } from "${importPath}";`);
+
+    // Use the inferred return type if available, otherwise use Awaited<ReturnType<factory>>
+    if (service.returnType) {
+      serviceEntries.push(`    ${service.name}: ${service.returnType};`);
+    } else {
+      // Infer type from the service definition
+      serviceEntries.push(`    ${service.name}: Awaited<ReturnType<typeof ${service.exportName}["factory"]>>;`);
+    }
+  }
+
+  const serviceImportsBlock = serviceImports.length > 0 ? serviceImports.join("\n") + "\n" : "";
+  const servicesType = serviceEntries.length > 0
+    ? `{\n${serviceEntries.join("\n")}\n  }`
+    : "Record<string, never>";
+
   const content = `// Auto-generated by donkeylabs generate
 // App context - import as: import type { AppContext } from ".@donkeylabs/server/context";
 
 /// <reference path="./registry.d.ts" />
-import type { PluginRegistry, CoreServices, Errors } from "@donkeylabs/server";
+import type { PluginRegistry, CoreServices, Errors, ServiceRegistry } from "@donkeylabs/server";
 import type { Kysely } from "kysely";
-
+${serviceImportsBlock}
 /** Merged database schema from all plugins */
 export type DatabaseSchema = ${schemaIntersection};
+
+/** Custom services registered via defineService() */
+export interface AppServices ${servicesType}
+
+// Augment the ServiceRegistry for type inference in ctx.services
+declare module "@donkeylabs/server" {
+  interface ServiceRegistry extends AppServices {}
+}
 
 /**
  * Fully typed application context.
@@ -701,6 +849,8 @@ export interface AppContext {
   errors: Errors;
   /** Application config */
   config: Record<string, any>;
+  /** Custom user-registered services */
+  services: AppServices;
   /** Client IP address */
   ip: string;
   /** Unique request ID */

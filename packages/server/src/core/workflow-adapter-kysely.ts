@@ -46,12 +46,10 @@ export class KyselyWorkflowAdapter implements WorkflowAdapter {
     this.db = db as Kysely<Database>;
     this.cleanupDays = config.cleanupDays ?? 30;
 
-    // Start cleanup timer
+    // Start cleanup timer (don't run immediately - tables may not exist yet before migrations)
     if (this.cleanupDays > 0) {
       const interval = config.cleanupInterval ?? 3600000; // 1 hour
       this.cleanupTimer = setInterval(() => this.cleanup(), interval);
-      // Run cleanup on startup
-      this.cleanup();
     }
   }
 
@@ -240,7 +238,9 @@ export class KyselyWorkflowAdapter implements WorkflowAdapter {
       if (numDeleted > 0) {
         console.log(`[Workflows] Cleaned up ${numDeleted} old workflow instances`);
       }
-    } catch (err) {
+    } catch (err: any) {
+      // Silently ignore "no such table" errors - table may not exist yet before migrations run
+      if (err?.message?.includes("no such table")) return;
       console.error("[Workflows] Cleanup error:", err);
     }
   }

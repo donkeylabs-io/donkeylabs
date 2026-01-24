@@ -169,6 +169,15 @@ export {
   type ProcessAdapter,
 } from "./process-adapter-sqlite";
 
+// Process Client - for use in wrapper scripts
+export {
+  ProcessClient,
+  type ProcessClient as ProcessClientType,
+  type ProcessClientConfig,
+  connect as connectProcess,
+  createProcessClient,
+} from "./process-client";
+
 export {
   KyselyProcessAdapter,
   type KyselyProcessAdapterConfig,

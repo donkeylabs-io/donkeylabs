@@ -130,7 +130,7 @@ await api.users.create({ email, name });
 | `.html()` | htmx partials |
 
 ## Core Services (ctx.core)
-`ctx.core.logger`, `ctx.core.cache`, `ctx.core.jobs`, `ctx.core.events`, `ctx.core.rateLimiter`, `ctx.core.sse`
+`ctx.core.logger`, `ctx.core.cache`, `ctx.core.jobs`, `ctx.core.events`, `ctx.core.rateLimiter`, `ctx.core.sse`, `ctx.core.processes`, `ctx.core.workflows`
 
 ## Error Handling
 ```ts
@@ -150,4 +150,4 @@ bun --bun tsc --noEmit    # Type check
 `get_project_info`, `create_plugin`, `add_migration`, `add_service_method`, `create_router`, `add_route`, `generate_types`, `list_plugins`, `scaffold_feature`
 
 ## Detailed Docs
-See `docs/` for: handlers, middleware, database, plugins, testing, jobs, cron, sse, workflows, router, errors, sveltekit-adapter.
+See `docs/` for: handlers, middleware, database, plugins, testing, jobs, external-jobs, processes, cron, sse, workflows, router, errors, sveltekit-adapter.

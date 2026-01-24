@@ -84,6 +84,21 @@ export interface ManagedProcess {
 export interface ProcessDefinition {
   name: string;
   config: Omit<ProcessConfig, "args"> & { args?: string[] };
+  /**
+   * Event schemas this process can emit.
+   * Events are automatically emitted to ctx.core.events as "process.<name>.<event>"
+   * and broadcast to SSE channel "process:<processId>".
+   *
+   * @example
+   * ```ts
+   * events: {
+   *   progress: z.object({ percent: z.number(), fps: z.number() }),
+   *   complete: z.object({ outputPath: z.string() }),
+   *   error: z.object({ message: z.string() }),
+   * }
+   * ```
+   */
+  events?: Record<string, import("zod").ZodType<any>>;
   /** Called when a message is received from the process */
   onMessage?: (process: ManagedProcess, message: any) => void | Promise<void>;
   /** Called when the process crashes unexpectedly */
@@ -261,7 +276,7 @@ export class ProcessesImpl implements Processes {
       // Create Unix socket
       const { socketPath, tcpPort } = await this.socketServer.createSocket(process.id);
 
-      // Build environment with socket info
+      // Build environment with socket info and metadata
       const env: Record<string, string> = {
         ...config.env,
         DONKEYLABS_PROCESS_ID: process.id,
@@ -271,6 +286,9 @@ export class ProcessesImpl implements Processes {
       }
       if (tcpPort) {
         env.DONKEYLABS_TCP_PORT = tcpPort.toString();
+      }
+      if (options?.metadata) {
+        env.DONKEYLABS_METADATA = JSON.stringify(options.metadata);
       }
 
       // Spawn the process
@@ -508,7 +526,32 @@ export class ProcessesImpl implements Processes {
       return;
     }
 
-    // Emit generic message event
+    // Handle typed event messages from ProcessClient.emit()
+    if (type === "event" && message.event) {
+      const eventName = message.event as string;
+      const eventData = message.data ?? {};
+
+      // Emit to events service as "process.<name>.<event>"
+      await this.emitEvent(`process.${proc.name}.${eventName}`, {
+        processId,
+        name: proc.name,
+        event: eventName,
+        data: eventData,
+      });
+
+      // Broadcast to SSE channel "process:<processId>"
+      if (this.events) {
+        // SSE broadcast happens through events - listeners can forward to SSE
+        await this.emitEvent("process.event", {
+          processId,
+          name: proc.name,
+          event: eventName,
+          data: eventData,
+        });
+      }
+    }
+
+    // Emit generic message event (for raw messages)
     await this.emitEvent("process.message", {
       processId,
       name: proc.name,

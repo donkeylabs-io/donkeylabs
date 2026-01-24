@@ -414,7 +414,13 @@ export class UnifiedApiClientBase {
       let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
       // Known event types from the server
-      const eventTypes = ['cron-event', 'job-completed', 'internal-event', 'manual', 'message'];
+      const eventTypes = [
+        'cron-event', 'job-completed', 'internal-event', 'manual', 'message',
+        // Workflow events
+        'workflow.started', 'workflow.progress', 'workflow.completed',
+        'workflow.failed', 'workflow.cancelled',
+        'workflow.step.started', 'workflow.step.completed', 'workflow.step.failed',
+      ];
 
       const handleMessage = (e: MessageEvent) => {
         try {

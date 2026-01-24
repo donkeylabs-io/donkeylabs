@@ -1,7 +1,19 @@
 // @donkeylabs/server - Main exports
 
 // Server
-export { AppServer, type ServerConfig } from "./server";
+export {
+  AppServer,
+  type ServerConfig,
+  // Lifecycle hooks
+  type HookContext,
+  type OnReadyHandler,
+  type OnShutdownHandler,
+  type OnErrorHandler,
+  // Custom services
+  defineService,
+  type ServiceDefinition,
+  type ServiceFactory,
+} from "./server";
 
 // Router
 export {
@@ -46,6 +58,8 @@ export {
   type InferMiddleware,
   type InferDependencies,
   type EventSchemas,
+  // Custom services registry
+  type ServiceRegistry,
 } from "./core";
 
 // Middleware
@@ -84,3 +98,6 @@ export {
   type WorkflowContext,
   type Workflows,
 } from "./core/workflows";
+
+// Test Harness - for plugin testing
+export { createTestHarness } from "./harness";

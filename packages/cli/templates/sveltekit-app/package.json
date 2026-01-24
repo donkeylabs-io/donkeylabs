@@ -24,9 +24,9 @@
     "vite": "^7.2.6"
   },
   "dependencies": {
-    "@donkeylabs/cli": "file:/Users/franciscosainzwilliams/Documents/GitHub/server/packages/cli",
-    "@donkeylabs/adapter-sveltekit": "file:/Users/franciscosainzwilliams/Documents/GitHub/server/packages/adapter-sveltekit",
-    "@donkeylabs/server": "file:/Users/franciscosainzwilliams/Documents/GitHub/server/packages/server",
+    "@donkeylabs/cli": "^1.1.18",
+    "@donkeylabs/adapter-sveltekit": "^1.1.18",
+    "@donkeylabs/server": "^1.1.18",
     "bits-ui": "^2.15.4",
     "clsx": "^2.1.1",
     "kysely": "^0.27.6",

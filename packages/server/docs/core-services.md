@@ -11,6 +11,9 @@ Core services are foundational utilities automatically available to all plugins 
 | [Events](events.md) | Pub/sub event system | In-memory |
 | [Cron](cron.md) | Scheduled recurring tasks | In-memory |
 | [Jobs](jobs.md) | Background job queue | In-memory |
+| [External Jobs](external-jobs.md) | Jobs in any language | SQLite |
+| [Processes](processes.md) | Long-running daemons | SQLite |
+| [Workflows](workflows.md) | Multi-step orchestration | In-memory |
 | [SSE](sse.md) | Server-Sent Events | In-memory |
 | [RateLimiter](rate-limiter.md) | Request throttling | In-memory |
 | [Errors](errors.md) | HTTP error factories | - |

@@ -103,8 +103,9 @@ export const orderWorkflow = workflow("process-order")
     transform: (ctx: WorkflowContext) => ({
       orderId: ctx.input.orderId,
       paymentId: ctx.steps["payment"].paymentId,
-      tracking: ctx.steps["fulfill"].shipping["prepare-shipment"].trackingId,
-      emailSent: ctx.steps["fulfill"].notification["send-email"].emailSent,
+      // Parallel branch outputs are stored directly by branch name
+      tracking: ctx.steps["fulfill"].shipping.trackingId,
+      emailSent: ctx.steps["fulfill"].notification.emailSent,
       completedAt: new Date().toISOString(),
     }),
     end: true,

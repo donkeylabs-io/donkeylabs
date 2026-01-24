@@ -84,6 +84,103 @@ export interface ServerConfig {
   useLegacyCoreDatabases?: boolean;
 }
 
+// =============================================================================
+// LIFECYCLE HOOK TYPES
+// =============================================================================
+
+/**
+ * Context passed to lifecycle hooks.
+ * Provides access to core services, plugin services, the database, and custom services.
+ */
+export interface HookContext {
+  /** Database instance (Kysely) */
+  db: CoreServices["db"];
+  /** Core services (logger, cache, events, jobs, etc.) */
+  core: CoreServices;
+  /** Plugin services (auth, email, permissions, etc.) */
+  plugins: Record<string, any>;
+  /** Server configuration */
+  config: Record<string, any>;
+  /** Custom user-registered services */
+  services: Record<string, any>;
+  /**
+   * Register a custom service at runtime (useful in onReady hooks).
+   * Services registered this way are immediately available in ctx.services.
+   *
+   * @example
+   * ```ts
+   * server.onReady(async (ctx) => {
+   *   const nvr = new NVR(ctx.plugins.auth);
+   *   await nvr.initialize();
+   *   ctx.setService("nvr", nvr);
+   * });
+   * ```
+   */
+  setService: <T>(name: string, service: T) => void;
+}
+
+/**
+ * Handler for onReady hook - called after server is fully initialized
+ */
+export type OnReadyHandler = (ctx: HookContext) => void | Promise<void>;
+
+/**
+ * Handler for onShutdown hook - called when server is shutting down
+ */
+export type OnShutdownHandler = () => void | Promise<void>;
+
+/**
+ * Handler for onError hook - called when an unhandled error occurs
+ */
+export type OnErrorHandler = (error: Error, ctx?: HookContext) => void | Promise<void>;
+
+/**
+ * Factory function for creating a service.
+ * Receives the hook context to access plugins, db, etc.
+ */
+export type ServiceFactory<T> = (ctx: HookContext) => T | Promise<T>;
+
+/**
+ * Service definition created by defineService().
+ * Contains the name and factory for type-safe service registration.
+ */
+export interface ServiceDefinition<N extends string = string, T = any> {
+  readonly name: N;
+  readonly factory: ServiceFactory<T>;
+  /** Type brand for inference - not used at runtime */
+  readonly __type?: T;
+}
+
+/**
+ * Define a custom service for registration with the server.
+ * The service will be available as `ctx.services.name` in route handlers.
+ * Types are automatically inferred and included in generated types.
+ *
+ * @example
+ * ```ts
+ * // services/nvr.ts
+ * export const nvrService = defineService("nvr", async (ctx) => {
+ *   const nvr = new NVR(ctx.plugins.auth);
+ *   await nvr.initialize();
+ *   return nvr;
+ * });
+ *
+ * // server/index.ts
+ * server.registerService(nvrService);
+ *
+ * // In routes - ctx.services.nvr is fully typed
+ * handle: async (input, ctx) => {
+ *   return ctx.services.nvr.getRecordings();
+ * }
+ * ```
+ */
+export function defineService<N extends string, T>(
+  name: N,
+  factory: ServiceFactory<T>
+): ServiceDefinition<N, T> {
+  return { name, factory };
+}
+
 export class AppServer {
   private port: number;
   private maxPortAttempts: number;
@@ -92,6 +189,16 @@ export class AppServer {
   private routeMap: Map<string, RouteDefinition<keyof HandlerRegistry>> = new Map();
   private coreServices: CoreServices;
   private typeGenConfig?: TypeGenerationConfig;
+
+  // Lifecycle hooks
+  private readyHandlers: OnReadyHandler[] = [];
+  private shutdownHandlers: OnShutdownHandler[] = [];
+  private errorHandlers: OnErrorHandler[] = [];
+  private isShuttingDown = false;
+
+  // Custom services registry
+  private serviceFactories = new Map<string, ServiceFactory<any>>();
+  private serviceRegistry: Record<string, any> = {};
 
   constructor(options: ServerConfig) {
     // Port priority: explicit config > PORT env var > default 3000
@@ -181,6 +288,196 @@ export class AppServer {
   registerPlugin(plugin: ConfiguredPlugin): this {
     this.manager.register(plugin);
     return this;
+  }
+
+  // ===========================================================================
+  // LIFECYCLE HOOKS & SERVICES
+  // ===========================================================================
+
+  /**
+   * Register a custom service/dependency that will be available in ctx.services.
+   * Services are initialized after plugins but before onReady handlers.
+   *
+   * Prefer using `defineService()` for automatic type generation:
+   * @example
+   * ```ts
+   * // services/nvr.ts
+   * export const nvrService = defineService("nvr", async (ctx) => {
+   *   const nvr = new NVR(ctx.plugins.auth);
+   *   await nvr.initialize();
+   *   return nvr;
+   * });
+   *
+   * // server/index.ts
+   * server.registerService(nvrService);
+   *
+   * // In routes - ctx.services.nvr is fully typed!
+   * handle: async (input, ctx) => {
+   *   return ctx.services.nvr.getRecordings();
+   * }
+   * ```
+   */
+  registerService<N extends string, T>(definition: ServiceDefinition<N, T>): this;
+  registerService<T>(name: string, factory: ServiceFactory<T>): this;
+  registerService<N extends string, T>(
+    nameOrDefinition: string | ServiceDefinition<N, T>,
+    factory?: ServiceFactory<T>
+  ): this {
+    if (typeof nameOrDefinition === "string") {
+      this.serviceFactories.set(nameOrDefinition, factory!);
+    } else {
+      this.serviceFactories.set(nameOrDefinition.name, nameOrDefinition.factory);
+    }
+    return this;
+  }
+
+  /**
+   * Get the custom services registry.
+   */
+  getCustomServices(): Record<string, any> {
+    return this.serviceRegistry;
+  }
+
+  /**
+   * Register a handler to be called when the server is fully initialized.
+   * Called after all plugins are initialized and background services are started.
+   *
+   * @example
+   * ```ts
+   * server.onReady(async (ctx) => {
+   *   // Initialize app-specific services
+   *   await MyService.initialize(ctx.plugins.auth);
+   *
+   *   // Set up event listeners
+   *   ctx.core.events.on("user.created", handleUserCreated);
+   *
+   *   ctx.core.logger.info("Application ready!");
+   * });
+   * ```
+   */
+  onReady(handler: OnReadyHandler): this {
+    this.readyHandlers.push(handler);
+    return this;
+  }
+
+  /**
+   * Register a handler to be called when the server is shutting down.
+   * Use this to clean up resources, close connections, etc.
+   *
+   * @example
+   * ```ts
+   * server.onShutdown(async () => {
+   *   await redis.quit();
+   *   await externalApi.disconnect();
+   *   console.log("Cleanup complete");
+   * });
+   * ```
+   */
+  onShutdown(handler: OnShutdownHandler): this {
+    this.shutdownHandlers.push(handler);
+    return this;
+  }
+
+  /**
+   * Register a global error handler for unhandled errors.
+   * Use this for error reporting, logging, or recovery.
+   *
+   * @example
+   * ```ts
+   * server.onError(async (error, ctx) => {
+   *   // Report to error tracking service
+   *   await Sentry.captureException(error);
+   *
+   *   ctx?.core.logger.error("Unhandled error", { error: error.message });
+   * });
+   * ```
+   */
+  onError(handler: OnErrorHandler): this {
+    this.errorHandlers.push(handler);
+    return this;
+  }
+
+  /**
+   * Build the hook context for lifecycle handlers.
+   */
+  private getHookContext(): HookContext {
+    return {
+      db: this.coreServices.db,
+      core: this.coreServices,
+      plugins: this.manager.getServices(),
+      config: this.coreServices.config,
+      services: this.serviceRegistry,
+      setService: <T>(name: string, service: T) => {
+        this.serviceRegistry[name] = service;
+      },
+    };
+  }
+
+  /**
+   * Initialize all registered services.
+   * Called after plugins but before onReady handlers.
+   */
+  private async initializeServices(): Promise<void> {
+    const ctx = this.getHookContext();
+    for (const [name, factory] of this.serviceFactories) {
+      try {
+        this.serviceRegistry[name] = await factory(ctx);
+        this.coreServices.logger.debug(`Service initialized: ${name}`);
+      } catch (error) {
+        this.coreServices.logger.error(`Failed to initialize service: ${name}`, { error });
+        await this.handleError(error as Error);
+        throw error; // Services are critical, fail startup if they can't init
+      }
+    }
+    if (this.serviceFactories.size > 0) {
+      this.coreServices.logger.info(`Initialized ${this.serviceFactories.size} custom service(s)`);
+    }
+  }
+
+  /**
+   * Run all registered ready handlers.
+   */
+  private async runReadyHandlers(): Promise<void> {
+    const ctx = this.getHookContext();
+    for (const handler of this.readyHandlers) {
+      try {
+        await handler(ctx);
+      } catch (error) {
+        this.coreServices.logger.error("Error in onReady handler", { error });
+        await this.handleError(error as Error);
+      }
+    }
+  }
+
+  /**
+   * Run all registered shutdown handlers (internal helper).
+   */
+  private async runShutdownHandlers(): Promise<void> {
+    // Run shutdown handlers in reverse order (LIFO)
+    for (const handler of [...this.shutdownHandlers].reverse()) {
+      try {
+        await handler();
+      } catch (error) {
+        this.coreServices.logger.error("Error in onShutdown handler", { error });
+      }
+    }
+  }
+
+  /**
+   * Handle an error using registered error handlers.
+   */
+  private async handleError(error: Error): Promise<void> {
+    const ctx = this.getHookContext();
+    for (const handler of this.errorHandlers) {
+      try {
+        await handler(error, ctx);
+      } catch (handlerError) {
+        this.coreServices.logger.error("Error in onError handler", {
+          originalError: error.message,
+          handlerError: (handlerError as Error).message,
+        });
+      }
+    }
   }
 
   /**
@@ -594,8 +891,8 @@ export interface Handler<T extends { Input: any; Output: any }> {
   handle(input: T["Input"]): T["Output"] | Promise<T["Output"]>;
 }
 
-// Re-export server context for model classes
-export { type ServerContext as AppContext } from "@donkeylabs/server";
+// Re-export server context for model classes (type-only to avoid bundling server code)
+export type { ServerContext as AppContext } from "@donkeylabs/server";
 
 // ============================================
 // Route Types
@@ -650,6 +947,10 @@ ${factoryFunction}
     }
     logger.info(`Loaded ${this.routeMap.size} RPC routes`);
     logger.info("Server initialized (adapter mode)");
+
+    // Initialize custom services, then run onReady handlers
+    await this.initializeServices();
+    await this.runReadyHandlers();
   }
 
   /**
@@ -700,6 +1001,7 @@ ${factoryFunction}
       core: this.coreServices,
       errors: this.coreServices.errors,
       config: this.coreServices.config,
+      services: this.serviceRegistry,
       ip,
       requestId: crypto.randomUUID(),
     };
@@ -774,6 +1076,7 @@ ${factoryFunction}
       core: this.coreServices,
       errors: this.coreServices.errors,
       config: this.coreServices.config,
+      services: this.serviceRegistry,
       ip,
       requestId: crypto.randomUUID(),
     };
@@ -894,7 +1197,7 @@ ${factoryFunction}
         const getEnabledHandlers = ["stream", "sse", "html", "raw"];
 
         // Check method based on handler type
-        if (req.method === "GET" && !getEnabledHandlers.includes(handlerType)) {
+        if (req.method === "GET" && !getEnabledHandlers.includes(handlerType as string)) {
           return new Response("Method Not Allowed", { status: 405 });
         }
         if (req.method !== "GET" && req.method !== "POST") {
@@ -923,6 +1226,7 @@ ${factoryFunction}
             core: this.coreServices,
             errors: this.coreServices.errors, // Convenience access
             config: this.coreServices.config,
+            services: this.serviceRegistry,
             ip,
             requestId: crypto.randomUUID(),
           };
@@ -978,6 +1282,10 @@ ${factoryFunction}
         // Update the actual port we're running on
         this.port = currentPort;
         logger.info(`Server running at http://localhost:${this.port}`);
+
+        // Initialize custom services, then run onReady handlers
+        await this.initializeServices();
+        await this.runReadyHandlers();
         return;
       } catch (error) {
         const isPortInUse =
@@ -1030,11 +1338,18 @@ ${factoryFunction}
 
   /**
    * Gracefully shutdown the server.
-   * Stops background services and closes SSE connections.
+   * Runs shutdown handlers, stops background services, and closes connections.
+   * Safe to call multiple times (idempotent).
    */
-  async shutdown() {
+  async shutdown(): Promise<void> {
+    if (this.isShuttingDown) return;
+    this.isShuttingDown = true;
+
     const { logger } = this.coreServices;
     logger.info("Shutting down server...");
+
+    // Run user shutdown handlers first (in reverse order - LIFO)
+    await this.runShutdownHandlers();
 
     // Stop SSE (closes all client connections)
     this.coreServices.sse.shutdown();
@@ -1052,5 +1367,28 @@ ${factoryFunction}
     this.coreServices.audit.stop();
 
     logger.info("Server shutdown complete");
+  }
+
+  /**
+   * Set up graceful shutdown handlers for process signals.
+   * Call this after start() to enable SIGTERM/SIGINT handling.
+   *
+   * @example
+   * ```ts
+   * await server.start();
+   * server.enableGracefulShutdown();
+   * ```
+   */
+  enableGracefulShutdown(): this {
+    const handleSignal = async (signal: string) => {
+      this.coreServices.logger.info(`Received ${signal}, initiating graceful shutdown...`);
+      await this.shutdown();
+      process.exit(0);
+    };
+
+    process.on("SIGTERM", () => handleSignal("SIGTERM"));
+    process.on("SIGINT", () => handleSignal("SIGINT"));
+
+    return this;
   }
 }

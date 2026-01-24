@@ -115,12 +115,10 @@ export class KyselyAuditAdapter implements AuditAdapter {
     this.db = db as Kysely<Database>;
     this.retentionDays = config.retentionDays ?? 90;
 
-    // Start cleanup timer
+    // Start cleanup timer (don't run immediately - tables may not exist yet before migrations)
     if (this.retentionDays > 0) {
       const interval = config.cleanupInterval ?? 86400000; // 24 hours
       this.cleanupTimer = setInterval(() => this.runCleanup(), interval);
-      // Run cleanup on startup
-      this.runCleanup();
     }
   }
 
@@ -238,7 +236,9 @@ export class KyselyAuditAdapter implements AuditAdapter {
       if (numDeleted > 0) {
         console.log(`[Audit] Cleaned up ${numDeleted} old audit entries`);
       }
-    } catch (err) {
+    } catch (err: any) {
+      // Silently ignore "no such table" errors - table may not exist yet before migrations run
+      if (err?.message?.includes("no such table")) return;
       console.error("[Audit] Cleanup error:", err);
     }
   }
