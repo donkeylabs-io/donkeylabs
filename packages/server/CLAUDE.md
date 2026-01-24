@@ -150,4 +150,7 @@ bun --bun tsc --noEmit    # Type check
 `get_project_info`, `create_plugin`, `add_migration`, `add_service_method`, `create_router`, `add_route`, `generate_types`, `list_plugins`, `scaffold_feature`
 
 ## Detailed Docs
-See `docs/` for: handlers, middleware, database, plugins, testing, jobs, external-jobs, processes, cron, sse, workflows, router, errors, sveltekit-adapter.
+**For comprehensive documentation, see the `docs/` directory.** Each service has its own detailed guide:
+- Core: logger, cache, events, cron, jobs, external-jobs, processes, workflows, sse, rate-limiter, errors
+- API: router, handlers, middleware
+- Infrastructure: database, plugins, testing, sveltekit-adapter, api-client
