@@ -6,6 +6,7 @@ import { Database } from "bun:sqlite";
 import { demoPlugin } from "./plugins/demo";
 import { workflowDemoPlugin } from "./plugins/workflow-demo";
 import { authPlugin } from "./plugins/auth";
+import { emailPlugin } from "./plugins/email";
 import demoRoutes from "./routes/demo";
 import { exampleRouter } from "./routes/example";
 import { authRouter } from "./routes/auth";
@@ -56,6 +57,16 @@ export const server = new AppServer({
 
 // Using default session strategy for this template
 server.registerPlugin(authPlugin());
+
+// Email plugin - supports Resend or console (for development)
+// Configure with process.env.RESEND_API_KEY for production
+server.registerPlugin(emailPlugin({
+  provider: process.env.RESEND_API_KEY ? "resend" : "console",
+  resend: process.env.RESEND_API_KEY ? { apiKey: process.env.RESEND_API_KEY } : undefined,
+  from: process.env.EMAIL_FROM || "noreply@example.com",
+  baseUrl: process.env.PUBLIC_BASE_URL || "http://localhost:5173",
+}));
+
 server.registerPlugin(demoPlugin);
 server.registerPlugin(workflowDemoPlugin);
 
