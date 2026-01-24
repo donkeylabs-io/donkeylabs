@@ -4,8 +4,7 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "dev": "bun scripts/dev.ts",
-    "dev:watch": "bun --watch --no-clear-screen scripts/watch-server.ts",
+    "dev": "bun --bun vite dev",
     "build": "bun run gen:types && vite build",
     "preview": "bun build/server/entry.js",
     "prepare": "bun --bun svelte-kit sync || echo ''",

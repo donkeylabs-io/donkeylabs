@@ -7,8 +7,12 @@
  */
 
 import type { Plugin, ViteDevServer } from "vite";
-import { spawn, type ChildProcess } from "node:child_process";
-import { resolve } from "node:path";
+import { spawn, type ChildProcess, exec } from "node:child_process";
+import { resolve, join } from "node:path";
+import { watch, type FSWatcher } from "node:fs";
+import { promisify } from "node:util";
+
+const execAsync = promisify(exec);
 import http from "node:http";
 
 export interface DevPluginOptions {
@@ -25,6 +29,18 @@ export interface DevPluginOptions {
    * @default 3001
    */
   backendPort?: number;
+
+  /**
+   * Watch server files and auto-regenerate types on changes.
+   * @default true
+   */
+  watchTypes?: boolean;
+
+  /**
+   * Directory to watch for server file changes.
+   * @default "./src/server"
+   */
+  watchDir?: string;
 }
 
 // Check if running with Bun runtime (bun --bun)
@@ -66,7 +82,12 @@ function setDevServer(server: any) {
  * });
  */
 export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
-  const { serverEntry = "./src/server/index.ts", backendPort = 3001 } = options;
+  const {
+    serverEntry = "./src/server/index.ts",
+    backendPort = 3001,
+    watchTypes = true,
+    watchDir = "./src/server",
+  } = options;
 
   // State for subprocess mode
   let backendProcess: ChildProcess | null = null;
@@ -75,6 +96,71 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
   // State for in-process mode
   let appServer: any = null;
   let serverReady = false;
+
+  // State for file watcher
+  let fileWatcher: FSWatcher | null = null;
+  let isGenerating = false;
+  let lastGenerationTime = 0;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const COOLDOWN_MS = 2000;
+  const DEBOUNCE_MS = 500;
+
+  // Patterns to ignore (generated files)
+  const IGNORED_PATTERNS = [/schema\.ts$/, /\.d\.ts$/];
+
+  function shouldIgnoreFile(filename: string): boolean {
+    return IGNORED_PATTERNS.some((pattern) => pattern.test(filename));
+  }
+
+  async function regenerateTypes() {
+    const now = Date.now();
+    if (now - lastGenerationTime < COOLDOWN_MS || isGenerating) return;
+
+    isGenerating = true;
+    lastGenerationTime = now;
+    console.log("\x1b[36m[donkeylabs-dev]\x1b[0m Server files changed, regenerating types...");
+
+    try {
+      await execAsync("bunx donkeylabs generate");
+      console.log("\x1b[32m[donkeylabs-dev]\x1b[0m Types regenerated successfully");
+    } catch (e: any) {
+      console.error("\x1b[31m[donkeylabs-dev]\x1b[0m Error regenerating types:", e.message);
+    } finally {
+      isGenerating = false;
+      lastGenerationTime = Date.now();
+    }
+  }
+
+  function debouncedRegenerate() {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(regenerateTypes, DEBOUNCE_MS);
+  }
+
+  function startFileWatcher() {
+    if (!watchTypes || fileWatcher) return;
+
+    const watchPath = resolve(process.cwd(), watchDir);
+    try {
+      fileWatcher = watch(watchPath, { recursive: true }, (_eventType, filename) => {
+        if (!filename) return;
+        if (!filename.endsWith(".ts")) return;
+        if (shouldIgnoreFile(filename)) return;
+        debouncedRegenerate();
+      });
+      console.log(`\x1b[36m[donkeylabs-dev]\x1b[0m Watching ${watchDir} for changes...`);
+    } catch (err) {
+      console.warn(`\x1b[33m[donkeylabs-dev]\x1b[0m Could not watch ${watchDir}:`, err);
+    }
+  }
+
+  function stopFileWatcher() {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    if (fileWatcher) {
+      fileWatcher.close();
+      fileWatcher = null;
+    }
+  }
 
   return {
     name: "donkeylabs-dev",
@@ -96,6 +182,9 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
 
     async configureServer(server: ViteDevServer) {
       const serverEntryResolved = resolve(process.cwd(), serverEntry);
+
+      // Start file watcher for auto type regeneration
+      startFileWatcher();
 
       if (isBunRuntime) {
         // ========== IN-PROCESS MODE (bun --bun run dev) ==========
@@ -486,6 +575,7 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
     },
 
     async closeBundle() {
+      stopFileWatcher();
       if (backendProcess) {
         backendProcess.kill();
         backendProcess = null;

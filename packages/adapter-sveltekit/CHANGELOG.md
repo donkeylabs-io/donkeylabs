@@ -1,5 +1,16 @@
 # @donkeylabs/adapter-sveltekit
 
+## 2.0.7
+
+### Patch Changes
+
+- Internalize file watcher for auto type regeneration in vite plugin
+
+  - Vite plugin now automatically watches server files and regenerates types on changes
+  - Removed need for external scripts/dev.ts and scripts/watch-server.ts
+  - Added watchTypes (default: true) and watchDir (default: "./src/server") options
+  - Simplified template dev script to just "bun --bun vite dev"
+
 ## 2.0.6
 
 ### Patch Changes
