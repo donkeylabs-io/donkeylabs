@@ -24,8 +24,38 @@ export const server = new AppServer({
   },
 });
 
-// Register plugins
-server.registerPlugin(authPlugin);  // Auth first - other plugins may depend on it
+// =============================================================================
+// AUTH PLUGIN CONFIGURATION
+// =============================================================================
+// Choose your auth strategy:
+//
+// 1. SESSION (default) - Stateful, stores sessions in database
+//    Best for: Web apps, server-rendered pages
+//    server.registerPlugin(authPlugin());
+//
+// 2. JWT - Stateless tokens, no database lookup needed
+//    Best for: Mobile apps, microservices, APIs
+//    server.registerPlugin(authPlugin({
+//      strategy: "jwt",
+//      jwt: { secret: process.env.JWT_SECRET! },
+//    }));
+//
+// 3. REFRESH-TOKEN - Short-lived access + long-lived refresh token
+//    Best for: SPAs, mobile apps needing token refresh
+//    server.registerPlugin(authPlugin({
+//      strategy: "refresh-token",
+//      jwt: {
+//        secret: process.env.JWT_SECRET!,
+//        accessExpiry: "15m",
+//        refreshExpiry: "30d",
+//      },
+//      cookie: { httpOnly: true, secure: true },
+//    }));
+//
+// =============================================================================
+
+// Using default session strategy for this template
+server.registerPlugin(authPlugin());
 server.registerPlugin(demoPlugin);
 server.registerPlugin(workflowDemoPlugin);
 

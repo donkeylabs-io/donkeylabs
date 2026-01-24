@@ -3,8 +3,9 @@
  *
  * Provides:
  * - auth.register - Create new account
- * - auth.login - Login and get session
- * - auth.logout - Invalidate session (requires auth)
+ * - auth.login - Login and get tokens
+ * - auth.refresh - Refresh access token (refresh-token strategy only)
+ * - auth.logout - Invalidate session/token (requires auth)
  * - auth.me - Get current user (optional auth)
  * - auth.updateProfile - Update profile (requires auth)
  */
@@ -14,13 +15,16 @@ import { z } from "zod";
 import {
   registerSchema,
   loginSchema,
+  refreshSchema,
   updateProfileSchema,
   authResponseSchema,
+  refreshResponseSchema,
   userSchema,
   logoutResponseSchema,
 } from "./auth.schemas";
 import { RegisterHandler } from "./handlers/register.handler";
 import { LoginHandler } from "./handlers/login.handler";
+import { RefreshHandler } from "./handlers/refresh.handler";
 import { LogoutHandler } from "./handlers/logout.handler";
 import { MeHandler } from "./handlers/me.handler";
 import { UpdateProfileHandler } from "./handlers/update-profile.handler";
@@ -38,6 +42,13 @@ export const authRouter = createRouter("auth")
     input: loginSchema,
     output: authResponseSchema,
     handle: LoginHandler,
+  })
+
+  // Refresh token (for refresh-token strategy)
+  .route("refresh").typed({
+    input: refreshSchema,
+    output: refreshResponseSchema,
+    handle: RefreshHandler,
   })
 
   // Optional auth - returns user if logged in, null otherwise

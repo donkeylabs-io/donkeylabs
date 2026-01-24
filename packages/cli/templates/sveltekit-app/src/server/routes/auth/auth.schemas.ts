@@ -15,6 +15,10 @@ export const loginSchema = z.object({
   password: z.string().min(1, "Password is required"),
 });
 
+export const refreshSchema = z.object({
+  refreshToken: z.string(),
+});
+
 export const updateProfileSchema = z.object({
   name: z.string().min(1).optional(),
   email: z.string().email().optional(),
@@ -30,10 +34,18 @@ export const userSchema = z.object({
   name: z.string().nullable(),
 });
 
+export const tokensSchema = z.object({
+  accessToken: z.string(),
+  refreshToken: z.string().optional(),
+  expiresIn: z.number(),
+});
+
 export const authResponseSchema = z.object({
   user: userSchema,
-  sessionId: z.string(),
+  tokens: tokensSchema,
 });
+
+export const refreshResponseSchema = tokensSchema;
 
 export const meResponseSchema = userSchema.nullable();
 
@@ -47,6 +59,8 @@ export const logoutResponseSchema = z.object({
 
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
+export type RefreshInput = z.infer<typeof refreshSchema>;
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 export type User = z.infer<typeof userSchema>;
+export type Tokens = z.infer<typeof tokensSchema>;
 export type AuthResponse = z.infer<typeof authResponseSchema>;

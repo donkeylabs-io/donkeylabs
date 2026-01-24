@@ -15,7 +15,7 @@ export class RegisterHandler implements Handler<Routes.Auth.Register> {
 
     return {
       user: result.user,
-      sessionId: result.sessionId,
+      tokens: result.tokens,
     };
   }
 }

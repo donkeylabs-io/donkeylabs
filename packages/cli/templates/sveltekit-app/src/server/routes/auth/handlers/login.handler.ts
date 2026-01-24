@@ -1,7 +1,7 @@
 import type { Handler, Routes, AppContext } from "$server/api";
 
 /**
- * Login Handler - Authenticate user and create session
+ * Login Handler - Authenticate user and create session/token
  */
 export class LoginHandler implements Handler<Routes.Auth.Login> {
   constructor(private ctx: AppContext) {}
@@ -14,7 +14,7 @@ export class LoginHandler implements Handler<Routes.Auth.Login> {
 
     return {
       user: result.user,
-      sessionId: result.sessionId,
+      tokens: result.tokens,
     };
   }
 }
