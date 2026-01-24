@@ -58,6 +58,10 @@ class SSEImpl implements SSE {
         // Send retry interval to client
         const retryMsg = `retry: ${this.retryInterval}\n\n`;
         controller.enqueue(this.encoder.encode(retryMsg));
+
+        // Send immediate heartbeat to establish connection and prevent early timeout
+        const heartbeat = `: heartbeat ${Date.now()}\n\n`;
+        controller.enqueue(this.encoder.encode(heartbeat));
       },
       cancel: () => {
         this.removeClient(id);

@@ -1,5 +1,13 @@
 # @donkeylabs/server
 
+## 2.0.5
+
+### Patch Changes
+
+- Send immediate heartbeat on SSE client connect
+
+  Previously, new SSE clients had to wait up to 30 seconds for the first heartbeat. This could cause connections to timeout on proxies with aggressive timeout settings. Now sends an immediate heartbeat when a client connects.
+
 ## 2.0.4
 
 ### Patch Changes
