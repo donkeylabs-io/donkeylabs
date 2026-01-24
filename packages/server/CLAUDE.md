@@ -153,4 +153,5 @@ bun --bun tsc --noEmit    # Type check
 **For comprehensive documentation, see the `docs/` directory.** Each service has its own detailed guide:
 - Core: logger, cache, events, cron, jobs, external-jobs, processes, workflows, sse, rate-limiter, errors
 - API: router, handlers, middleware
+- Server: lifecycle-hooks, services (custom services)
 - Infrastructure: database, plugins, testing, sveltekit-adapter, api-client

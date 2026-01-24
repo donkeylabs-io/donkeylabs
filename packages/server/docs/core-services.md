@@ -339,3 +339,10 @@ See individual service documentation for adapter interfaces:
 - [Events Adapters](events.md#custom-adapters)
 - [Jobs Adapters](jobs.md#custom-adapters)
 - [Rate Limiter Adapters](rate-limiter.md#custom-adapters)
+
+---
+
+## Related Documentation
+
+- [Custom Services](services.md) - Register app-specific services with `defineService()`
+- [Lifecycle Hooks](lifecycle-hooks.md) - `onReady`, `onShutdown`, `onError` hooks
