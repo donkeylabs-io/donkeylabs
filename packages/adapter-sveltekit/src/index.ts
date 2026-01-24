@@ -214,8 +214,8 @@ export function createUnifiedServer(config) {
         });
       }
 
-      // 2. API routes (POST only)
-      if (req.method === "POST") {
+      // 2. API routes (GET or POST - stream/html/sse use GET, typed uses POST)
+      if ((req.method === "GET" || req.method === "POST") && /^\\/[a-zA-Z][a-zA-Z0-9_.]*$/.test(pathname)) {
         const routeName = pathname.slice(1); // Remove leading /
 
         // Check if this is a registered API route

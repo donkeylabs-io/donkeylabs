@@ -19,9 +19,9 @@
         "zod": "^3.24.2"
     },
     "peerDependencies": {
-        "@donkeylabs/server": "^2.0.1",
-        "@donkeylabs/cli": "^2.0.1",
-        "@donkeylabs/mcp": "^2.0.1",
-        "@donkeylabs/adapter-sveltekit": "^2.0.1"
+        "@donkeylabs/server": "^2.0.2",
+        "@donkeylabs/cli": "^2.0.2",
+        "@donkeylabs/mcp": "^2.0.2",
+        "@donkeylabs/adapter-sveltekit": "^2.0.2"
     }
 }

@@ -1,5 +1,15 @@
 # @donkeylabs/adapter-sveltekit
 
+## 2.0.2
+
+### Patch Changes
+
+- Fix production handler to support GET requests for API routes
+
+  The production runtime handler was only handling POST requests, which broke `stream`, `html`, and SSE routes that use GET. Now matches the dev handler behavior by accepting both GET and POST for API routes.
+
+  - @donkeylabs/server@2.0.2
+
 ## 2.0.1
 
 ### Patch Changes
