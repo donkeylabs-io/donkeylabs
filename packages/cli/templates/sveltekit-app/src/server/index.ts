@@ -7,9 +7,12 @@ import { demoPlugin } from "./plugins/demo";
 import { workflowDemoPlugin } from "./plugins/workflow-demo";
 import { authPlugin } from "./plugins/auth";
 import { emailPlugin } from "./plugins/email";
+import { permissionsPlugin } from "./plugins/permissions";
 import demoRoutes from "./routes/demo";
 import { exampleRouter } from "./routes/example";
 import { authRouter } from "./routes/auth";
+import { permissionsRouter } from "./routes/permissions";
+import { tenantsRouter } from "./routes/tenants";
 
 // Simple in-memory database
 const db = new Kysely<{}>({
@@ -67,11 +70,53 @@ server.registerPlugin(emailPlugin({
   baseUrl: process.env.PUBLIC_BASE_URL || "http://localhost:5173",
 }));
 
+// =============================================================================
+// PERMISSIONS PLUGIN - Multi-tenant RBAC
+// =============================================================================
+// Define your app's permissions here for type-safe checking.
+// Client can use: api.permissions.check({ permissions: ["documents.create"] })
+//
+server.registerPlugin(permissionsPlugin({
+  permissions: {
+    // Documents
+    documents: ["create", "read", "write", "delete", "admin"],
+    // Members & Roles
+    members: ["invite", "remove", "list"],
+    roles: ["create", "assign", "manage"],
+    // Billing (example)
+    billing: ["view", "manage"],
+  } as const,
+  defaultRoles: [
+    {
+      name: "Admin",
+      permissions: ["*"], // Full access
+      isDefault: false,
+    },
+    {
+      name: "Member",
+      permissions: [
+        "documents.create",
+        "documents.read",
+        "documents.write",
+        "members.list",
+      ],
+      isDefault: true, // Auto-assigned to new members
+    },
+    {
+      name: "Viewer",
+      permissions: ["documents.read", "members.list"],
+      isDefault: false,
+    },
+  ],
+}));
+
 server.registerPlugin(demoPlugin);
 server.registerPlugin(workflowDemoPlugin);
 
 // Register routes
 server.use(authRouter);
+server.use(permissionsRouter);
+server.use(tenantsRouter);
 server.use(demoRoutes);
 server.use(exampleRouter);
 
