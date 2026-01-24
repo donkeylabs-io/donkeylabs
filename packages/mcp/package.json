@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/mcp",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "MCP server for AI-assisted development with @donkeylabs/server",
   "type": "module",
   "main": "./src/server.ts",
@@ -34,7 +34,7 @@
     "zod": "^4.3.5"
   },
   "peerDependencies": {
-    "@donkeylabs/server": "^2.0.0"
+    "@donkeylabs/server": "^2.0.1"
   },
   "keywords": [
     "mcp",

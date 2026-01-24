@@ -1,5 +1,11 @@
 # @donkeylabs/cli
 
+## 2.0.1
+
+### Patch Changes
+
+- @donkeylabs/server@2.0.1
+
 ## 2.0.0
 
 ### Minor Changes
