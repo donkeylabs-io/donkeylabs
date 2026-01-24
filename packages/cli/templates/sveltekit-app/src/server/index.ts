@@ -6,6 +6,7 @@ import { Database } from "bun:sqlite";
 import { demoPlugin } from "./plugins/demo";
 import { workflowDemoPlugin } from "./plugins/workflow-demo";
 import demoRoutes from "./routes/demo";
+import { exampleRouter } from "./routes/example";
 
 // Simple in-memory database
 const db = new Kysely<{}>({
@@ -27,6 +28,7 @@ server.registerPlugin(workflowDemoPlugin);
 
 // Register routes
 server.use(demoRoutes);
+server.use(exampleRouter);
 
 // Handle CLI type generation (must be after routes are registered)
 server.handleGenerateMode();
