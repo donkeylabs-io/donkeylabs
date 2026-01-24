@@ -1,5 +1,22 @@
 # @donkeylabs/adapter-sveltekit
 
+## 2.0.3
+
+### Patch Changes
+
+- Add autoReconnect and reconnectDelay options to SSEConnection
+
+  - SSEConnection now accepts options to control reconnection behavior
+  - `autoReconnect` (default: true) - enable/disable automatic reconnection
+  - `reconnectDelay` (default: 3000ms) - delay before reconnect attempts
+  - `onConnect` / `onDisconnect` callbacks for connection state tracking
+  - New `reconnecting` property to check if currently waiting to reconnect
+  - Properly closes EventSource and cancels reconnect on `close()`
+
+  This allows users to disable native EventSource auto-reconnect cycling and implement custom reconnection logic.
+
+  - @donkeylabs/server@2.0.3
+
 ## 2.0.2
 
 ### Patch Changes
