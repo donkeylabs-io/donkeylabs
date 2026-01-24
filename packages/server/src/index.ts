@@ -46,6 +46,10 @@ export {
   createPlugin,
   PluginManager,
   PluginContext,
+  // Events
+  defineEvents,
+  type EventRegistry,
+  type EventSchemas,
   type PluginRegistry,
   type PluginHandlerRegistry,
   type PluginMiddlewareRegistry,
@@ -57,7 +61,6 @@ export {
   type InferHandlers,
   type InferMiddleware,
   type InferDependencies,
-  type EventSchemas,
   // Custom services registry
   type ServiceRegistry,
 } from "./core";

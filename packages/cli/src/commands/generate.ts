@@ -90,6 +90,121 @@ interface ServiceDefinitionInfo {
   returnType: string | null;
 }
 
+interface EventDefinitionInfo {
+  name: string; // e.g., "order.created"
+  schemaSource: string; // e.g., "z.object({ orderId: z.string() })"
+}
+
+/**
+ * Extract events from a defineEvents() call in a file.
+ * Parses patterns like:
+ * export const events = defineEvents({
+ *   "order.created": z.object({ orderId: z.string() }),
+ * })
+ */
+async function extractEventsFromFile(filePath: string): Promise<EventDefinitionInfo[]> {
+  try {
+    const content = await readFile(filePath, "utf-8");
+    const events: EventDefinitionInfo[] = [];
+
+    // Find defineEvents call
+    const defineEventsMatch = content.match(/defineEvents\s*\(\s*\{/);
+    if (!defineEventsMatch || defineEventsMatch.index === undefined) {
+      return events;
+    }
+
+    // Extract the object block
+    const blockStart = defineEventsMatch.index + defineEventsMatch[0].length - 1;
+    const block = extractBalancedBlock(content, blockStart, "{", "}");
+    if (!block) return events;
+
+    // Parse event entries: "event.name": z.object({...})
+    // Match quoted keys followed by Zod schemas
+    const eventPattern = /["']([^"']+)["']\s*:\s*(z\.[^,}]+(?:\([^)]*\))?)/g;
+
+    let match;
+    const innerBlock = block.slice(1, -1); // Remove outer braces
+
+    // More robust extraction - find each event key and its schema
+    const keyPattern = /["']([a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)*)["']\s*:/gi;
+    let keyMatch;
+    const keyPositions: { name: string; pos: number }[] = [];
+
+    while ((keyMatch = keyPattern.exec(innerBlock)) !== null) {
+      keyPositions.push({ name: keyMatch[1]!, pos: keyMatch.index + keyMatch[0].length });
+    }
+
+    // For each key, extract the Zod schema that follows
+    for (let i = 0; i < keyPositions.length; i++) {
+      const { name, pos } = keyPositions[i]!;
+      const nextPos = keyPositions[i + 1]?.pos ?? innerBlock.length;
+
+      // Get the slice between this key and the next
+      let schemaSlice = innerBlock.slice(pos, nextPos).trim();
+
+      // Find where the Zod expression ends
+      if (schemaSlice.startsWith("z.")) {
+        // Extract balanced parentheses for the schema
+        let depth = 0;
+        let endIdx = 0;
+        let foundParen = false;
+
+        for (let j = 0; j < schemaSlice.length; j++) {
+          if (schemaSlice[j] === "(") {
+            depth++;
+            foundParen = true;
+          } else if (schemaSlice[j] === ")") {
+            depth--;
+            if (depth === 0 && foundParen) {
+              endIdx = j + 1;
+              // Check for chained methods
+              const rest = schemaSlice.slice(endIdx);
+              const chainMatch = rest.match(/^(\s*\.\w+\([^)]*\))+/);
+              if (chainMatch) {
+                endIdx += chainMatch[0].length;
+              }
+              break;
+            }
+          }
+        }
+
+        if (endIdx > 0) {
+          const schema = schemaSlice.slice(0, endIdx).trim();
+          events.push({ name, schemaSource: schema });
+        }
+      }
+    }
+
+    return events;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Find and extract server-level events from common locations.
+ */
+async function findServerEvents(): Promise<EventDefinitionInfo[]> {
+  const possiblePaths = [
+    "src/events.ts",
+    "src/server/events.ts",
+    "src/lib/events.ts",
+  ];
+
+  for (const path of possiblePaths) {
+    const fullPath = join(process.cwd(), path);
+    if (existsSync(fullPath)) {
+      const events = await extractEventsFromFile(fullPath);
+      if (events.length > 0) {
+        console.log(pc.dim(`  Found events in ${path}`));
+        return events;
+      }
+    }
+  }
+
+  return [];
+}
+
 /**
  * Extract defineService calls from source files.
  * Looks for patterns like: export const myService = defineService("name", ...)
@@ -632,12 +747,22 @@ export async function generateCommand(_args: string[]): Promise<void> {
     );
   }
 
+  // Find server-level events
+  const serverEvents = await findServerEvents();
+  if (serverEvents.length > 0) {
+    console.log(
+      pc.green("Found events:"),
+      serverEvents.map((e) => pc.dim(e.name)).join(", ")
+    );
+  }
+
   // Generate all files
   await generateRegistry(plugins, outPath);
   await generateContext(plugins, services, outPath);
   await generateRouteTypes(fileRoutes, outPath);
+  await generateEventTypes(serverEvents, outPath);
 
-  const generated = ["registry", "context", "routes"];
+  const generated = ["registry", "context", "routes", "events"];
 
   // Determine client output path
   const clientOutput = config.client?.output || join(outPath, "client.ts");
@@ -972,6 +1097,173 @@ ${namespaceBlocks.join("\n\n")}
 `;
 
   await writeFile(join(outPath, "routes.ts"), content);
+}
+
+/**
+ * Convert a Zod schema source to a TypeScript type string.
+ * Handles common patterns like z.object({ ... }), z.string(), etc.
+ */
+function zodSchemaToTypeScript(schemaSource: string): string {
+  // Handle z.object({ ... })
+  if (schemaSource.startsWith("z.object(")) {
+    const inner = schemaSource.slice(9, -1); // Remove z.object( and )
+    // Parse the object fields
+    return parseZodObjectFields(inner);
+  }
+
+  // Handle z.string(), z.number(), etc.
+  if (schemaSource.startsWith("z.string")) return "string";
+  if (schemaSource.startsWith("z.number")) return "number";
+  if (schemaSource.startsWith("z.boolean")) return "boolean";
+  if (schemaSource.startsWith("z.date")) return "Date";
+  if (schemaSource.startsWith("z.undefined")) return "undefined";
+  if (schemaSource.startsWith("z.null")) return "null";
+  if (schemaSource.startsWith("z.any")) return "any";
+  if (schemaSource.startsWith("z.unknown")) return "unknown";
+
+  // Handle z.array(...)
+  if (schemaSource.startsWith("z.array(")) {
+    const inner = schemaSource.slice(8, -1);
+    return `${zodSchemaToTypeScript(inner)}[]`;
+  }
+
+  // Handle z.enum([...])
+  if (schemaSource.startsWith("z.enum(")) {
+    const inner = schemaSource.slice(7, -1);
+    // Extract values from ["a", "b", "c"]
+    const match = inner.match(/\[(.*)\]/);
+    if (match?.[1]) {
+      return match[1].split(",").map(s => s.trim()).join(" | ");
+    }
+  }
+
+  // Fallback - return the source as a comment
+  return "unknown /* " + schemaSource + " */";
+}
+
+/**
+ * Parse z.object({ field: z.string(), ... }) inner content to TypeScript.
+ */
+function parseZodObjectFields(objectContent: string): string {
+  // Remove outer braces if present
+  let content = objectContent.trim();
+  if (content.startsWith("{")) content = content.slice(1);
+  if (content.endsWith("}")) content = content.slice(0, -1);
+
+  const fields: string[] = [];
+
+  // Match field patterns: fieldName: z.type()
+  const fieldPattern = /(\w+)\s*:\s*(z\.[^,}]+(?:\([^)]*\))?)/g;
+  let match;
+
+  while ((match = fieldPattern.exec(content)) !== null) {
+    const fieldName = match[1]!;
+    let fieldSchema = match[2]!;
+
+    // Check for .optional() modifier
+    const isOptional = fieldSchema.includes(".optional()");
+    fieldSchema = fieldSchema.replace(/\.optional\(\)/, "");
+
+    const tsType = zodSchemaToTypeScript(fieldSchema);
+    fields.push(`${fieldName}${isOptional ? "?" : ""}: ${tsType}`);
+  }
+
+  return `{ ${fields.join("; ")} }`;
+}
+
+/**
+ * Generate events.ts with namespace-nested types and EventMap.
+ */
+async function generateEventTypes(events: EventDefinitionInfo[], outPath: string): Promise<void> {
+  if (events.length === 0) {
+    // Still generate an empty file for consistency
+    const content = `// Auto-generated by donkeylabs generate
+// Events - import as: import { type EventMap, type EventName } from ".@donkeylabs/server/events";
+
+/** Map of all event names to their data types */
+export interface EventMap {}
+
+/** Union of all available event names */
+export type EventName = never;
+
+/** Namespace for event types - use as Order.Created */
+export namespace Events {}
+
+// Augment EventRegistry for typed emit/on (empty when no events defined)
+declare module "@donkeylabs/server" {
+  interface EventRegistry {}
+}
+`;
+    await writeFile(join(outPath, "events.ts"), content);
+    return;
+  }
+
+  // Group events by namespace (first part of event name)
+  // e.g., "order.created" -> namespace "Order", event "Created"
+  const byNamespace = new Map<string, { eventName: string; pascalName: string; schemaSource: string; fullName: string }[]>();
+
+  for (const event of events) {
+    const parts = event.name.split(".");
+    const namespace = toPascalCase(parts[0] || "App");
+    const eventName = parts.slice(1).map(p => toPascalCase(p)).join("") || toPascalCase(parts[0] || "Event");
+
+    if (!byNamespace.has(namespace)) {
+      byNamespace.set(namespace, []);
+    }
+    byNamespace.get(namespace)!.push({
+      eventName,
+      pascalName: eventName,
+      schemaSource: event.schemaSource,
+      fullName: event.name,
+    });
+  }
+
+  // Generate namespace blocks
+  const namespaceBlocks: string[] = [];
+  const eventMapEntries: string[] = [];
+  const eventRegistryEntries: string[] = [];
+  const eventNames: string[] = [];
+
+  for (const [namespace, nsEvents] of byNamespace) {
+    const eventTypeDecls = nsEvents.map(e => {
+      const tsType = zodSchemaToTypeScript(e.schemaSource);
+      return `  /** Event data for "${e.fullName}" */
+  export type ${e.pascalName} = ${tsType};`;
+    }).join("\n\n");
+
+    namespaceBlocks.push(`export namespace ${namespace} {\n${eventTypeDecls}\n}`);
+
+    // Add to EventMap and EventRegistry
+    for (const e of nsEvents) {
+      eventMapEntries.push(`  "${e.fullName}": ${namespace}.${e.pascalName};`);
+      eventRegistryEntries.push(`    "${e.fullName}": ${namespace}.${e.pascalName};`);
+      eventNames.push(`"${e.fullName}"`);
+    }
+  }
+
+  const content = `// Auto-generated by donkeylabs generate
+// Events - import as: import { type EventMap, type EventName, Order, User } from ".@donkeylabs/server/events";
+
+// Event type namespaces - use as Order.Created, User.Signup, etc.
+${namespaceBlocks.join("\n\n")}
+
+/** Map of all event names to their data types */
+export interface EventMap {
+${eventMapEntries.join("\n")}
+}
+
+/** Union of all available event names */
+export type EventName = ${eventNames.join(" | ") || "never"};
+
+// Augment EventRegistry for typed emit/on
+declare module "@donkeylabs/server" {
+  interface EventRegistry {
+${eventRegistryEntries.join("\n")}
+  }
+}
+`;
+
+  await writeFile(join(outPath, "events.ts"), content);
 }
 
 async function generateClientFromRoutes(

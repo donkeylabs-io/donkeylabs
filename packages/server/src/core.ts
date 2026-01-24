@@ -24,6 +24,52 @@ export interface ClientConfig {
 
 export type EventSchemas = Record<string, z.ZodType<any>>;
 
+/**
+ * Registry for server-level events.
+ * Augment this interface to add typed events:
+ *
+ * @example
+ * ```ts
+ * // In generated types or app's types file
+ * declare module "@donkeylabs/server" {
+ *   interface EventRegistry {
+ *     "order.created": { orderId: string; total: number };
+ *     "user.signup": { userId: string; email: string };
+ *   }
+ * }
+ *
+ * // Now ctx.core.events.emit("order.created", {...}) is typed
+ * ```
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface EventRegistry {}
+
+/**
+ * Define server-level events with Zod schemas.
+ * Events defined here will be typed and available across the app.
+ *
+ * @example
+ * ```ts
+ * // src/events.ts
+ * import { z } from "zod";
+ * import { defineEvents } from "@donkeylabs/server";
+ *
+ * export const events = defineEvents({
+ *   "order.created": z.object({
+ *     orderId: z.string(),
+ *     total: z.number(),
+ *   }),
+ *   "user.signup": z.object({
+ *     userId: z.string(),
+ *     email: z.string(),
+ *   }),
+ * });
+ * ```
+ */
+export function defineEvents<T extends EventSchemas>(events: T): T {
+  return events;
+}
+
 export type Register<
   Service = void,
   Schema = {},

@@ -1,6 +1,8 @@
 // Core Events Service
 // Pub/sub async event queue
 
+import type { EventRegistry } from "../core";
+
 export interface EventHandler<T = any> {
   (data: T): void | Promise<void>;
 }
@@ -25,10 +27,44 @@ export interface EventsConfig {
   maxHistorySize?: number;
 }
 
+/**
+ * Check if EventRegistry has any keys (is augmented)
+ */
+type HasEvents = keyof EventRegistry extends never ? false : true;
+
+/**
+ * Events service interface.
+ * When EventRegistry is augmented (via generated types), emit/on become fully typed.
+ * Otherwise, falls back to generic string event names.
+ */
 export interface Events {
+  /**
+   * Emit a typed event (when EventRegistry is augmented)
+   */
+  emit<K extends keyof EventRegistry>(event: K, data: EventRegistry[K]): Promise<void>;
+  /**
+   * Emit an untyped event (fallback for dynamic event names)
+   */
   emit<T = any>(event: string, data: T): Promise<void>;
+
+  /**
+   * Subscribe to a typed event (when EventRegistry is augmented)
+   */
+  on<K extends keyof EventRegistry>(event: K, handler: EventHandler<EventRegistry[K]>): Subscription;
+  /**
+   * Subscribe to an untyped event (fallback for patterns like "user.*")
+   */
   on<T = any>(event: string, handler: EventHandler<T>): Subscription;
+
+  /**
+   * Subscribe to a typed event once (when EventRegistry is augmented)
+   */
+  once<K extends keyof EventRegistry>(event: K, handler: EventHandler<EventRegistry[K]>): Subscription;
+  /**
+   * Subscribe to an untyped event once
+   */
   once<T = any>(event: string, handler: EventHandler<T>): Subscription;
+
   off(event: string, handler?: EventHandler): void;
   getHistory(event: string, limit?: number): Promise<EventRecord[]>;
 }
