@@ -104,20 +104,20 @@ server.onReady(async (ctx) => {
 
 ## onShutdown Hook
 
-Called when the server is shutting down. Use for cleanup operations.
+Called when the server is shutting down. Receives the same `HookContext` as `onReady` for cleanup operations.
 
 ```typescript
-server.onShutdown(async () => {
-  console.log("Server shutting down...");
+server.onShutdown(async (ctx) => {
+  ctx.core.logger.info("Server shutting down...");
 
   // Close external connections
-  await externalApi.disconnect();
+  await ctx.services.externalApi.disconnect();
 
   // Flush pending data
-  await analytics.flush();
+  await ctx.services.analytics.flush();
 
-  // Save state
-  await saveCheckpoint();
+  // Access plugins for cleanup
+  await ctx.plugins.cache.flushAll();
 });
 ```
 
@@ -127,8 +127,8 @@ Enable automatic graceful shutdown on SIGTERM/SIGINT:
 
 ```typescript
 server
-  .onShutdown(async () => {
-    await cleanup();
+  .onShutdown(async (ctx) => {
+    await cleanup(ctx);
   })
   .enableGracefulShutdown(); // Handles SIGTERM and SIGINT
 
@@ -204,8 +204,8 @@ export const server = new AppServer({ db })
   })
 
   // Cleanup when SvelteKit stops
-  .onShutdown(async () => {
-    await cleanup();
+  .onShutdown(async (ctx) => {
+    await ctx.services.nvr?.disconnect();
   })
 
   // Handle errors
@@ -263,8 +263,8 @@ server.onReady(async (ctx) => {
   });
 });
 
-server.onShutdown(async () => {
-  console.log("Graceful shutdown initiated");
+server.onShutdown(async (ctx) => {
+  ctx.core.logger.info("Graceful shutdown initiated");
   // Cleanup happens automatically for core services
 });
 
@@ -303,14 +303,14 @@ server.onReady(async (ctx) => {
 Don't let shutdown hang indefinitely:
 
 ```typescript
-server.onShutdown(async () => {
+server.onShutdown(async (ctx) => {
   const timeout = setTimeout(() => {
-    console.error("Shutdown timeout - forcing exit");
+    ctx.core.logger.error("Shutdown timeout - forcing exit");
     process.exit(1);
   }, 30000);
 
   try {
-    await gracefulCleanup();
+    await gracefulCleanup(ctx);
   } finally {
     clearTimeout(timeout);
   }

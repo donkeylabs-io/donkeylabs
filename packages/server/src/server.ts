@@ -125,9 +125,10 @@ export interface HookContext {
 export type OnReadyHandler = (ctx: HookContext) => void | Promise<void>;
 
 /**
- * Handler for onShutdown hook - called when server is shutting down
+ * Handler for onShutdown hook - called when server is shutting down.
+ * Receives the same context as onReady for cleanup operations.
  */
-export type OnShutdownHandler = () => void | Promise<void>;
+export type OnShutdownHandler = (ctx: HookContext) => void | Promise<void>;
 
 /**
  * Handler for onError hook - called when an unhandled error occurs
@@ -366,10 +367,10 @@ export class AppServer {
    *
    * @example
    * ```ts
-   * server.onShutdown(async () => {
-   *   await redis.quit();
-   *   await externalApi.disconnect();
-   *   console.log("Cleanup complete");
+   * server.onShutdown(async (ctx) => {
+   *   await ctx.services.redis.quit();
+   *   await ctx.services.externalApi.disconnect();
+   *   ctx.core.logger.info("Cleanup complete");
    * });
    * ```
    */
@@ -453,10 +454,11 @@ export class AppServer {
    * Run all registered shutdown handlers (internal helper).
    */
   private async runShutdownHandlers(): Promise<void> {
+    const ctx = this.getHookContext();
     // Run shutdown handlers in reverse order (LIFO)
     for (const handler of [...this.shutdownHandlers].reverse()) {
       try {
-        await handler();
+        await handler(ctx);
       } catch (error) {
         this.coreServices.logger.error("Error in onShutdown handler", { error });
       }
