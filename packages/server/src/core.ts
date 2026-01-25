@@ -154,6 +154,13 @@ export interface GlobalContext {
   requestId: string;
   /** Authenticated user (set by auth middleware) */
   user?: any;
+  /**
+   * Abort signal for the request.
+   * Fires when client disconnects (closes connection, navigates away, aborts fetch).
+   * Use this to clean up resources in streaming/SSE handlers.
+   * Only available in HTTP context, undefined in direct calls (SSR).
+   */
+  signal?: AbortSignal;
 }
 
 export class PluginContext<Deps = any, Schema = any, Config = void> {

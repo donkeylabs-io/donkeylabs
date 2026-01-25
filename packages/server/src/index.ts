@@ -102,5 +102,24 @@ export {
   type Workflows,
 } from "./core/workflows";
 
+// Processes (managed subprocesses)
+export {
+  type Processes,
+  type ProcessDefinition,
+  type ProcessStats,
+  type ManagedProcess,
+  type ProcessConfig,
+  type ProcessStatus,
+  type SpawnOptions,
+} from "./core/processes";
+
+// Admin Dashboard
+export {
+  type AdminConfig,
+  isAdminEnabled,
+  createAdmin,
+  createAdminRouter,
+} from "./admin";
+
 // Test Harness - for plugin testing
 export { createTestHarness } from "./harness";

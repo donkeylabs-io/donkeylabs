@@ -81,6 +81,34 @@ export interface ManagedProcess {
   error?: string;
 }
 
+/**
+ * Process stats received from a managed process.
+ */
+export interface ProcessStats {
+  /** CPU usage since last measurement */
+  cpu: {
+    /** User CPU time in microseconds */
+    user: number;
+    /** System CPU time in microseconds */
+    system: number;
+    /** CPU usage percentage (0-100) since last measurement */
+    percent: number;
+  };
+  /** Memory usage */
+  memory: {
+    /** Resident set size in bytes */
+    rss: number;
+    /** V8 heap total in bytes */
+    heapTotal: number;
+    /** V8 heap used in bytes */
+    heapUsed: number;
+    /** External memory in bytes (C++ objects bound to JS) */
+    external: number;
+  };
+  /** Process uptime in seconds */
+  uptime: number;
+}
+
 export interface ProcessDefinition {
   name: string;
   config: Omit<ProcessConfig, "args"> & { args?: string[] };
@@ -107,6 +135,18 @@ export interface ProcessDefinition {
   onUnhealthy?: (process: ManagedProcess) => void | Promise<void>;
   /** Called when the process is restarted */
   onRestart?: (oldProcess: ManagedProcess, newProcess: ManagedProcess, attempt: number) => void | Promise<void>;
+  /**
+   * Called when stats are received from the process.
+   * Stats are emitted by the process client when stats.enabled is true.
+   *
+   * @example
+   * ```ts
+   * onStats: (process, stats) => {
+   *   console.log(`${process.name}: CPU ${stats.cpu.percent}%, Memory ${stats.memory.rss / 1e6}MB`);
+   * }
+   * ```
+   */
+  onStats?: (process: ManagedProcess, stats: ProcessStats) => void | Promise<void>;
 }
 
 export interface SpawnOptions {
@@ -523,6 +563,33 @@ export class ProcessesImpl implements Processes {
     // Handle heartbeat messages
     if (type === "heartbeat") {
       await this.adapter.update(processId, { lastHeartbeat: new Date() });
+      return;
+    }
+
+    // Handle stats messages
+    if (type === "stats" && message.stats) {
+      const stats = message.stats as ProcessStats;
+
+      // Emit to events service as "process.<name>.stats"
+      await this.emitEvent(`process.${proc.name}.stats`, {
+        processId,
+        name: proc.name,
+        stats,
+      });
+
+      // Generic stats event
+      await this.emitEvent("process.stats", {
+        processId,
+        name: proc.name,
+        stats,
+      });
+
+      // Call definition callback
+      const definition = this.definitions.get(proc.name);
+      if (definition?.onStats) {
+        await definition.onStats(proc, stats);
+      }
+
       return;
     }
 

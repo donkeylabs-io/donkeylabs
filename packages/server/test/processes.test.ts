@@ -402,6 +402,101 @@ describe("Processes Service", () => {
     });
   });
 
+  describe("Stats", () => {
+    it("should emit process.stats event when stats message received", async () => {
+      const statsReceived: any[] = [];
+      events.on("process.stats", (data) => statsReceived.push(data));
+
+      processes.register({
+        name: "stats-emitter",
+        config: { command: "sleep", args: ["60"] },
+      });
+
+      const processId = await processes.spawn("stats-emitter");
+
+      // Simulate stats message from process client
+      // The socket server receives this and forwards to handleMessage
+      const mockStats = {
+        cpu: { user: 1000, system: 500, percent: 5.5 },
+        memory: { rss: 50000000, heapTotal: 30000000, heapUsed: 20000000, external: 1000000 },
+        uptime: 10.5,
+      };
+
+      // Send stats via the socket (simulating what ProcessClient does)
+      await (processes as any).handleMessage({
+        type: "stats",
+        processId,
+        timestamp: Date.now(),
+        stats: mockStats,
+      });
+
+      expect(statsReceived).toHaveLength(1);
+      expect(statsReceived[0].processId).toBe(processId);
+      expect(statsReceived[0].name).toBe("stats-emitter");
+      expect(statsReceived[0].stats).toEqual(mockStats);
+    });
+
+    it("should emit process.<name>.stats event", async () => {
+      const statsReceived: any[] = [];
+      events.on("process.stats-named.stats", (data) => statsReceived.push(data));
+
+      processes.register({
+        name: "stats-named",
+        config: { command: "sleep", args: ["60"] },
+      });
+
+      const processId = await processes.spawn("stats-named");
+
+      const mockStats = {
+        cpu: { user: 2000, system: 1000, percent: 10 },
+        memory: { rss: 100000000, heapTotal: 50000000, heapUsed: 40000000, external: 2000000 },
+        uptime: 20,
+      };
+
+      await (processes as any).handleMessage({
+        type: "stats",
+        processId,
+        timestamp: Date.now(),
+        stats: mockStats,
+      });
+
+      expect(statsReceived).toHaveLength(1);
+      expect(statsReceived[0].stats.cpu.percent).toBe(10);
+    });
+
+    it("should call onStats callback when stats received", async () => {
+      const statsCallbacks: any[] = [];
+
+      processes.register({
+        name: "stats-callback",
+        config: { command: "sleep", args: ["60"] },
+        onStats: (proc, stats) => {
+          statsCallbacks.push({ proc, stats });
+        },
+      });
+
+      const processId = await processes.spawn("stats-callback");
+
+      const mockStats = {
+        cpu: { user: 500, system: 250, percent: 2.5 },
+        memory: { rss: 25000000, heapTotal: 15000000, heapUsed: 10000000, external: 500000 },
+        uptime: 5,
+      };
+
+      await (processes as any).handleMessage({
+        type: "stats",
+        processId,
+        timestamp: Date.now(),
+        stats: mockStats,
+      });
+
+      expect(statsCallbacks).toHaveLength(1);
+      expect(statsCallbacks[0].proc.id).toBe(processId);
+      expect(statsCallbacks[0].stats.cpu.percent).toBe(2.5);
+      expect(statsCallbacks[0].stats.memory.rss).toBe(25000000);
+    });
+  });
+
   describe("Auto-Restart", () => {
     it("should auto-restart process when autoRestart is enabled", async () => {
       const crashes: any[] = [];

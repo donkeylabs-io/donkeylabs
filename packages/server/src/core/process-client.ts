@@ -28,6 +28,44 @@ import { createConnection, type Socket } from "node:net";
 // Types
 // ============================================
 
+/**
+ * Process stats collected and emitted to the server.
+ */
+export interface ProcessStats {
+  /** CPU usage since last measurement */
+  cpu: {
+    /** User CPU time in microseconds */
+    user: number;
+    /** System CPU time in microseconds */
+    system: number;
+    /** CPU usage percentage (0-100) since last measurement */
+    percent: number;
+  };
+  /** Memory usage */
+  memory: {
+    /** Resident set size in bytes */
+    rss: number;
+    /** V8 heap total in bytes */
+    heapTotal: number;
+    /** V8 heap used in bytes */
+    heapUsed: number;
+    /** External memory in bytes (C++ objects bound to JS) */
+    external: number;
+  };
+  /** Process uptime in seconds */
+  uptime: number;
+}
+
+/**
+ * Configuration for stats emission.
+ */
+export interface StatsConfig {
+  /** Enable stats emission (default: false) */
+  enabled?: boolean;
+  /** Interval between stats emissions in ms (default: 5000) */
+  interval?: number;
+}
+
 export interface ProcessClientConfig {
   /** Process ID (from DONKEYLABS_PROCESS_ID env var) */
   processId: string;
@@ -43,6 +81,8 @@ export interface ProcessClientConfig {
   reconnectInterval?: number;
   /** Max reconnection attempts (default: 30) */
   maxReconnectAttempts?: number;
+  /** Stats emission configuration */
+  stats?: StatsConfig;
 }
 
 export interface ProcessClient {
@@ -72,12 +112,18 @@ class ProcessClientImpl implements ProcessClient {
   private heartbeatInterval: number;
   private reconnectInterval: number;
   private maxReconnectAttempts: number;
+  private statsConfig: StatsConfig;
 
   private heartbeatTimer?: ReturnType<typeof setInterval>;
+  private statsTimer?: ReturnType<typeof setInterval>;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private reconnectAttempts = 0;
   private isDisconnecting = false;
   private _connected = false;
+
+  // For CPU percentage calculation
+  private lastCpuUsage?: NodeJS.CpuUsage;
+  private lastCpuTime?: number;
 
   constructor(config: ProcessClientConfig) {
     this.processId = config.processId;
@@ -87,6 +133,7 @@ class ProcessClientImpl implements ProcessClient {
     this.heartbeatInterval = config.heartbeatInterval ?? 5000;
     this.reconnectInterval = config.reconnectInterval ?? 2000;
     this.maxReconnectAttempts = config.maxReconnectAttempts ?? 30;
+    this.statsConfig = config.stats ?? { enabled: false };
   }
 
   get connected(): boolean {
@@ -99,6 +146,7 @@ class ProcessClientImpl implements ProcessClient {
         this._connected = true;
         this.reconnectAttempts = 0;
         this.startHeartbeat();
+        this.startStats();
 
         // Send initial "connected" message
         this.sendMessage({ type: "connected" });
@@ -122,6 +170,7 @@ class ProcessClientImpl implements ProcessClient {
       const onClose = () => {
         this._connected = false;
         this.stopHeartbeat();
+        this.stopStats();
 
         if (!this.isDisconnecting && this.reconnectAttempts < this.maxReconnectAttempts) {
           console.log(`[ProcessClient] Connection closed, attempting reconnect...`);
@@ -219,6 +268,69 @@ class ProcessClientImpl implements ProcessClient {
     }
   }
 
+  private startStats(): void {
+    if (!this.statsConfig.enabled) return;
+
+    this.stopStats();
+
+    // Initialize CPU tracking
+    this.lastCpuUsage = process.cpuUsage();
+    this.lastCpuTime = Date.now();
+
+    const interval = this.statsConfig.interval ?? 5000;
+    this.statsTimer = setInterval(() => {
+      this.sendStats();
+    }, interval);
+
+    // Send initial stats
+    this.sendStats();
+  }
+
+  private stopStats(): void {
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = undefined;
+    }
+  }
+
+  private collectStats(): ProcessStats {
+    const now = Date.now();
+    const memUsage = process.memoryUsage();
+    const cpuUsage = process.cpuUsage(this.lastCpuUsage);
+
+    // Calculate CPU percentage
+    const elapsedMs = now - (this.lastCpuTime ?? now);
+    const elapsedUs = elapsedMs * 1000; // Convert to microseconds
+    const totalCpuUs = cpuUsage.user + cpuUsage.system;
+    // CPU percent = (CPU time used / elapsed time) * 100
+    // For multi-core, this can exceed 100%
+    const cpuPercent = elapsedUs > 0 ? (totalCpuUs / elapsedUs) * 100 : 0;
+
+    // Update for next calculation
+    this.lastCpuUsage = process.cpuUsage();
+    this.lastCpuTime = now;
+
+    return {
+      cpu: {
+        user: cpuUsage.user,
+        system: cpuUsage.system,
+        percent: Math.round(cpuPercent * 100) / 100, // Round to 2 decimals
+      },
+      memory: {
+        rss: memUsage.rss,
+        heapTotal: memUsage.heapTotal,
+        heapUsed: memUsage.heapUsed,
+        external: memUsage.external,
+      },
+      uptime: process.uptime(),
+    };
+  }
+
+  private sendStats(): void {
+    const stats = this.collectStats();
+    this.sendMessage({ type: "stats", stats });
+  }
+
   private sendMessage(message: { type: string; [key: string]: any }): boolean {
     if (!this.socket || this.socket.destroyed || !this._connected) {
       return false;
@@ -250,6 +362,7 @@ class ProcessClientImpl implements ProcessClient {
   disconnect(): void {
     this.isDisconnecting = true;
     this.stopHeartbeat();
+    this.stopStats();
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -291,14 +404,22 @@ export function createProcessClient(config: ProcessClientConfig): ProcessClient 
  *
  * @example
  * ```ts
+ * // Basic connection
  * const client = await ProcessClient.connect();
  * client.emit("progress", { percent: 50 });
+ *
+ * // With stats emission
+ * const client = await ProcessClient.connect({
+ *   stats: { enabled: true, interval: 2000 }
+ * });
  * ```
  */
 export async function connect(options?: {
   heartbeatInterval?: number;
   reconnectInterval?: number;
   maxReconnectAttempts?: number;
+  /** Enable real-time CPU/memory stats emission */
+  stats?: StatsConfig;
 }): Promise<ProcessClient> {
   const processId = process.env.DONKEYLABS_PROCESS_ID;
   const socketPath = process.env.DONKEYLABS_SOCKET_PATH;

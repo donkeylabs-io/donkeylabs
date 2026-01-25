@@ -1004,6 +1004,7 @@ ${factoryFunction}
       services: this.serviceRegistry,
       ip,
       requestId: crypto.randomUUID(),
+      signal: req.signal,
     };
 
     // Get middleware stack
@@ -1229,6 +1230,7 @@ ${factoryFunction}
             services: this.serviceRegistry,
             ip,
             requestId: crypto.randomUUID(),
+            signal: req.signal,
           };
 
           // Get middleware stack for this route

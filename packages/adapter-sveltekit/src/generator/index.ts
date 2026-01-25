@@ -33,7 +33,7 @@ function isRouteInfo(route: RouteInfo | ExtractedRoute): route is RouteInfo {
 /** SvelteKit-specific generator options */
 export const svelteKitGeneratorOptions: ClientGeneratorOptions = {
   baseImport:
-    'import { UnifiedApiClientBase, SSEConnection, type ClientOptions, type RequestOptions } from "@donkeylabs/adapter-sveltekit/client";',
+    'import { UnifiedApiClientBase, SSEConnection, type ClientOptions, type RequestOptions, type SSEConnectionOptions } from "@donkeylabs/adapter-sveltekit/client";',
   baseClass: "UnifiedApiClientBase",
   constructorSignature: "options?: ClientOptions",
   constructorBody: "super(options);",
@@ -178,7 +178,7 @@ function generateTypedSvelteKitClient(routes: RouteInfo[]): string {
         const outputType = `Routes.${pascalNs}.${pascalRoute}.Output`;
         // Use original route name with prefix for the request
         const fullRouteName = commonPrefix ? `${commonPrefix}.${r.name}` : r.name;
-        return `    ${methodName}: (input: ${inputType}): Promise<${outputType}> => this.request("${fullRouteName}", input)`;
+        return `    ${methodName}: (input: ${inputType}, options?: RequestOptions): Promise<${outputType}> => this.request("${fullRouteName}", input, options)`;
       });
 
     const rawMethodEntries = nsRoutes
@@ -220,7 +220,13 @@ function generateTypedSvelteKitClient(routes: RouteInfo[]): string {
         const eventsType = `Routes.${pascalNs}.${pascalRoute}.Events`;
         const fullRouteName = commonPrefix ? `${commonPrefix}.${r.name}` : r.name;
         // SSE returns typed SSEConnection for type-safe event handling
-        return `    ${methodName}: (${hasInput ? `input: ${inputType}` : ""}): SSEConnection<${eventsType}> => this.sseConnect("${fullRouteName}"${hasInput ? ", input" : ""})`;
+        // With input: (input, options?) => sseConnect(route, input, options)
+        // Without input: (options?) => sseConnect(route, undefined, options)
+        if (hasInput) {
+          return `    ${methodName}: (input: ${inputType}, options?: SSEConnectionOptions): SSEConnection<${eventsType}> => this.sseConnect("${fullRouteName}", input, options)`;
+        } else {
+          return `    ${methodName}: (options?: SSEConnectionOptions): SSEConnection<${eventsType}> => this.sseConnect("${fullRouteName}", undefined, options)`;
+        }
       });
 
     const formDataMethodEntries = nsRoutes

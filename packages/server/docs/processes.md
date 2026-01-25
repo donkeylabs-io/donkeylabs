@@ -214,6 +214,10 @@ const client = await ProcessClient.connect({
   heartbeatInterval: 5000,      // Send heartbeat every 5s (default)
   reconnectInterval: 2000,      // Retry connection every 2s
   maxReconnectAttempts: 30,     // Max reconnection attempts
+  stats: {
+    enabled: true,              // Enable CPU/memory stats emission
+    interval: 2000,             // Emit stats every 2s (default: 5000)
+  },
 });
 ```
 
@@ -296,6 +300,13 @@ interface ProcessDefinition {
 
   /** Max restart attempts (default: 3) */
   maxRestarts?: number;
+
+  /** Callbacks */
+  onMessage?: (process, message) => void;
+  onCrash?: (process, exitCode) => void;
+  onUnhealthy?: (process) => void;
+  onRestart?: (oldProcess, newProcess, attempt) => void;
+  onStats?: (process, stats: ProcessStats) => void;
 }
 ```
 
@@ -380,6 +391,8 @@ The server emits these events for process lifecycle:
 | `process.connected` | `{ processId, name }` | Client connected |
 | `process.{name}.{event}` | Event data | Custom process event |
 | `process.heartbeat` | `{ processId, name }` | Heartbeat received |
+| `process.stats` | `{ processId, name, stats }` | CPU/memory stats (if enabled) |
+| `process.{name}.stats` | `{ processId, name, stats }` | Stats for specific process type |
 | `process.stale` | `{ processId, name, timeSince }` | No heartbeat |
 | `process.stopped` | `{ processId, name, exitCode }` | Process stopped |
 | `process.crashed` | `{ processId, name, error }` | Process crashed |
@@ -439,6 +452,86 @@ router.route("subscribe").sse({
 </script>
 
 <progress value={progress} max="100">{progress}%</progress>
+```
+
+## Real-time Stats Monitoring
+
+ProcessClient can emit CPU and memory stats at regular intervals for monitoring.
+
+### Enable Stats in Wrapper
+
+```typescript
+// workers/my-worker.ts
+import { ProcessClient } from "@donkeylabs/server/process-client";
+
+const client = await ProcessClient.connect({
+  stats: {
+    enabled: true,     // Enable stats emission
+    interval: 2000,    // Emit every 2 seconds (default: 5000)
+  },
+});
+
+// Your process logic...
+```
+
+### Stats Shape
+
+```typescript
+interface ProcessStats {
+  cpu: {
+    user: number;      // User CPU time in microseconds
+    system: number;    // System CPU time in microseconds
+    percent: number;   // CPU usage percentage (0-100, can exceed on multi-core)
+  };
+  memory: {
+    rss: number;       // Resident set size in bytes
+    heapTotal: number; // V8 heap total in bytes
+    heapUsed: number;  // V8 heap used in bytes
+    external: number;  // External memory (C++ objects) in bytes
+  };
+  uptime: number;      // Process uptime in seconds
+}
+```
+
+### Listen for Stats on Server
+
+```typescript
+// Option 1: Use onStats callback in process definition
+processes.define("video-encoder", {
+  command: "bun",
+  args: ["./workers/encoder.ts"],
+  onStats: (proc, stats) => {
+    console.log(`[${proc.name}] CPU: ${stats.cpu.percent.toFixed(1)}%`);
+    console.log(`[${proc.name}] Memory: ${(stats.memory.rss / 1e6).toFixed(1)}MB`);
+  },
+});
+
+// Option 2: Listen via events
+ctx.core.events.on("process.video-encoder.stats", ({ processId, stats }) => {
+  // Store in time-series DB, send to monitoring dashboard, etc.
+  metrics.gauge("process.cpu", stats.cpu.percent, { processId });
+  metrics.gauge("process.memory", stats.memory.rss, { processId });
+});
+
+// Option 3: Listen to all process stats
+ctx.core.events.on("process.stats", ({ processId, name, stats }) => {
+  console.log(`${name} (${processId}): ${stats.cpu.percent}% CPU`);
+});
+```
+
+### Broadcast Stats to Dashboard
+
+```typescript
+// Forward stats to SSE for real-time dashboard
+ctx.core.events.on("process.stats", ({ processId, name, stats }) => {
+  ctx.core.sse.broadcast("admin:processes", "stats", {
+    processId,
+    name,
+    cpu: stats.cpu.percent,
+    memory: stats.memory.rss,
+    uptime: stats.uptime,
+  });
+});
 ```
 
 ## Heartbeat Monitoring
