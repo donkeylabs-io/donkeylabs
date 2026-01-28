@@ -210,6 +210,7 @@ export class AppServer {
   // Custom services registry
   private serviceFactories = new Map<string, ServiceFactory<any>>();
   private serviceRegistry: Record<string, any> = {};
+  private generateModeTimer?: ReturnType<typeof setTimeout>;
 
   constructor(options: ServerConfig) {
     // Port priority: explicit config > PORT env var > default 3000
@@ -500,15 +501,18 @@ export class AppServer {
   use(router: IRouter): this {
     this.routers.push(router);
 
-    // Set up generate mode handler on first use() call
+    // Handle CLI type generation mode with debounced timer
     // This handles SvelteKit-style entry files that don't call start()
-    if (!this.generateModeSetup && process.env.DONKEYLABS_GENERATE === "1") {
-      this.generateModeSetup = true;
-      // Use beforeExit to output routes after module finishes loading
-      process.on("beforeExit", () => {
+    if (process.env.DONKEYLABS_GENERATE === "1") {
+      // Clear any existing timer and set a new one
+      // This ensures we wait for all use() calls to complete
+      if (this.generateModeTimer) {
+        clearTimeout(this.generateModeTimer);
+      }
+      this.generateModeTimer = setTimeout(() => {
         this.outputRoutesForGeneration();
         process.exit(0);
-      });
+      }, 100); // 100ms debounce - waits for all route registrations
     }
 
     return this;
