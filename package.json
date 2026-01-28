@@ -7,7 +7,7 @@
   "scripts": {
     "test": "bun test --filter='packages/*'",
     "typecheck": "bun --bun tsc --noEmit -p packages/server",
-    "release": "npm publish --provenance --access public -w @donkeylabs/server && npm publish --provenance --access public -w @donkeylabs/cli && npm publish --provenance --access public -w @donkeylabs/adapter-sveltekit && npm publish --provenance --access public -w @donkeylabs/mcp",
+    "release": "npm publish --provenance --access public -w @donkeylabs/server || true && npm publish --provenance --access public -w @donkeylabs/cli || true && npm publish --provenance --access public -w @donkeylabs/adapter-sveltekit || true && npm publish --provenance --access public -w @donkeylabs/mcp || true",
     "changeset": "changeset",
     "version": "changeset version"
   },
