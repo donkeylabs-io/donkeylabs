@@ -53,8 +53,10 @@ export interface WebSocketService {
   unsubscribe(clientId: string, channel: string): boolean;
   /** Register a message handler */
   onMessage(handler: WebSocketMessageHandler): void;
-  /** Get all clients in a channel */
-  getClients(channel?: string): string[];
+  /** Get all client IDs in a channel (or all if no channel) */
+  getClientIds(channel?: string): string[];
+  /** Get all clients with metadata (for admin dashboard) */
+  getClients(): Array<{ id: string; connectedAt: Date; channels: string[] }>;
   /** Get client count */
   getClientCount(channel?: string): number;
   /** Check if a client is connected */
@@ -195,12 +197,20 @@ class WebSocketServiceImpl implements WebSocketService {
     this.messageHandlers.push(handler);
   }
 
-  getClients(channel?: string): string[] {
+  getClientIds(channel?: string): string[] {
     if (channel) {
       const channelClients = this.channels.get(channel);
       return channelClients ? Array.from(channelClients) : [];
     }
     return Array.from(this.clients.keys());
+  }
+
+  getClients(): Array<{ id: string; connectedAt: Date; channels: string[] }> {
+    return Array.from(this.clients.values()).map((client) => ({
+      id: client.id,
+      connectedAt: client.connectedAt,
+      channels: Array.from(client.channels),
+    }));
   }
 
   getClientCount(channel?: string): number {

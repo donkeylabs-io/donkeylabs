@@ -6,7 +6,7 @@
  */
 
 import type { Kysely } from "kysely";
-import type { WorkflowAdapter, WorkflowInstance, WorkflowStatus, StepResult } from "./workflows";
+import type { WorkflowAdapter, WorkflowInstance, WorkflowStatus, StepResult, GetAllWorkflowsOptions } from "./workflows";
 
 export interface KyselyWorkflowAdapterConfig {
   /** Auto-cleanup completed workflows older than N days (default: 30, 0 to disable) */
@@ -171,6 +171,27 @@ export class KyselyWorkflowAdapter implements WorkflowAdapter {
       .selectFrom("__donkeylabs_workflow_instances__")
       .selectAll()
       .where("status", "=", "running")
+      .execute();
+
+    return rows.map((r) => this.rowToInstance(r));
+  }
+
+  async getAllInstances(options: GetAllWorkflowsOptions = {}): Promise<WorkflowInstance[]> {
+    const { status, workflowName, limit = 100, offset = 0 } = options;
+
+    let query = this.db.selectFrom("__donkeylabs_workflow_instances__").selectAll();
+
+    if (status) {
+      query = query.where("status", "=", status);
+    }
+    if (workflowName) {
+      query = query.where("workflow_name", "=", workflowName);
+    }
+
+    const rows = await query
+      .orderBy("created_at", "desc")
+      .limit(limit)
+      .offset(offset)
       .execute();
 
     return rows.map((r) => this.rowToInstance(r));

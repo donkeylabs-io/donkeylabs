@@ -6,7 +6,7 @@
  */
 
 import type { Kysely } from "kysely";
-import type { Job, JobAdapter, JobStatus } from "./jobs";
+import type { Job, JobAdapter, JobStatus, GetAllJobsOptions } from "./jobs";
 import type { ExternalJobProcessState } from "./external-jobs";
 
 export interface KyselyJobAdapterConfig {
@@ -226,6 +226,27 @@ export class KyselyJobAdapter implements JobAdapter {
           eb("process_state", "=", "spawning"),
         ])
       )
+      .execute();
+
+    return rows.map((r) => this.rowToJob(r));
+  }
+
+  async getAll(options: GetAllJobsOptions = {}): Promise<Job[]> {
+    const { status, name, limit = 100, offset = 0 } = options;
+
+    let query = this.db.selectFrom("__donkeylabs_jobs__").selectAll();
+
+    if (status) {
+      query = query.where("status", "=", status);
+    }
+    if (name) {
+      query = query.where("name", "=", name);
+    }
+
+    const rows = await query
+      .orderBy("created_at", "desc")
+      .limit(limit)
+      .offset(offset)
       .execute();
 
     return rows.map((r) => this.rowToJob(r));

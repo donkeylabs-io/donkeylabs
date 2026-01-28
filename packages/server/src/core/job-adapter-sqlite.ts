@@ -8,7 +8,7 @@
 import { Database } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { Job, JobAdapter, JobStatus } from "./jobs";
+import type { Job, JobAdapter, JobStatus, GetAllJobsOptions } from "./jobs";
 import type { ExternalJobProcessState } from "./external-jobs";
 
 export interface SqliteJobAdapterConfig {
@@ -229,6 +229,27 @@ export class SqliteJobAdapter implements JobAdapter {
          AND (process_state = 'running' OR process_state = 'orphaned' OR process_state = 'spawning')`
       )
       .all() as any[];
+    return rows.map((r) => this.rowToJob(r));
+  }
+
+  async getAll(options: GetAllJobsOptions = {}): Promise<Job[]> {
+    const { status, name, limit = 100, offset = 0 } = options;
+    let query = `SELECT * FROM jobs WHERE 1=1`;
+    const params: any[] = [];
+
+    if (status) {
+      query += ` AND status = ?`;
+      params.push(status);
+    }
+    if (name) {
+      query += ` AND name = ?`;
+      params.push(name);
+    }
+
+    query += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+    params.push(limit, offset);
+
+    const rows = this.db.query(query).all(...params) as any[];
     return rows.map((r) => this.rowToJob(r));
   }
 
