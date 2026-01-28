@@ -15,6 +15,7 @@ import {
   createProcesses,
   createAudit,
   createWebSocket,
+  createStorage,
   KyselyJobAdapter,
   KyselyWorkflowAdapter,
   MemoryAuditAdapter,
@@ -63,6 +64,7 @@ export async function createTestHarness(targetPlugin: Plugin, dependencies: Plug
   // Use in-memory adapter for audit in tests
   const audit = createAudit({ adapter: new MemoryAuditAdapter() });
   const websocket = createWebSocket();
+  const storage = createStorage(); // Uses memory adapter by default
 
   const core: CoreServices = {
     db,
@@ -79,6 +81,7 @@ export async function createTestHarness(targetPlugin: Plugin, dependencies: Plug
     processes,
     audit,
     websocket,
+    storage,
   };
 
   const manager = new PluginManager(core);

@@ -43,6 +43,7 @@ export {
   type JobHandler,
   type JobAdapter,
   type JobsConfig,
+  type GetAllJobsOptions,
   MemoryJobAdapter,
   createJobs,
 } from "./jobs";
@@ -146,6 +147,7 @@ export {
   type ChoiceCondition,
   type PassStepDefinition,
   type RetryConfig,
+  type GetAllWorkflowsOptions,
   WorkflowBuilder,
   MemoryWorkflowAdapter,
   workflow,
@@ -216,3 +218,26 @@ export {
   type WebSocketConfig,
   createWebSocket,
 } from "./websocket";
+
+export {
+  type Storage,
+  type StorageAdapter,
+  type StorageConfig,
+  type StorageFile,
+  type UploadOptions,
+  type UploadResult,
+  type DownloadResult,
+  type ListOptions,
+  type ListResult,
+  type GetUrlOptions,
+  type CopyOptions,
+  type StorageVisibility,
+  type S3ProviderConfig,
+  type LocalProviderConfig,
+  type MemoryProviderConfig,
+  MemoryStorageAdapter,
+  createStorage,
+} from "./storage";
+
+export { LocalStorageAdapter } from "./storage-adapter-local";
+export { S3StorageAdapter } from "./storage-adapter-s3";
