@@ -18,6 +18,7 @@ import {
   createProcesses,
   createAudit,
   createWebSocket,
+  createStorage,
   extractClientIP,
   HttpError,
   KyselyJobAdapter,
@@ -36,7 +37,9 @@ import {
   type ProcessesConfig,
   type AuditConfig,
   type WebSocketConfig,
+  type StorageConfig,
 } from "./core/index";
+import type { AdminConfig } from "./admin";
 import { zodSchemaToTs } from "./generator/zod-to-ts";
 
 export interface TypeGenerationConfig {
@@ -76,6 +79,12 @@ export interface ServerConfig {
   processes?: ProcessesConfig;
   audit?: AuditConfig;
   websocket?: WebSocketConfig;
+  storage?: StorageConfig;
+  /**
+   * Admin dashboard configuration.
+   * Automatically enabled in dev mode, disabled in production.
+   */
+  admin?: AdminConfig;
   /**
    * Use legacy separate databases for core services.
    * Set to true to keep using .donkeylabs/*.db files instead of shared DB.
@@ -196,6 +205,7 @@ export class AppServer {
   private shutdownHandlers: OnShutdownHandler[] = [];
   private errorHandlers: OnErrorHandler[] = [];
   private isShuttingDown = false;
+  private generateModeSetup = false;
 
   // Custom services registry
   private serviceFactories = new Map<string, ServiceFactory<any>>();
@@ -256,6 +266,7 @@ export class AppServer {
       adapter: auditAdapter,
     });
     const websocket = createWebSocket(options.websocket);
+    const storage = createStorage(options.storage);
 
     this.coreServices = {
       db: options.db,
@@ -272,6 +283,7 @@ export class AppServer {
       processes,
       audit,
       websocket,
+      storage,
     };
 
     // Resolve circular dependency: workflows needs core for step handlers
@@ -487,6 +499,18 @@ export class AppServer {
    */
   use(router: IRouter): this {
     this.routers.push(router);
+
+    // Set up generate mode handler on first use() call
+    // This handles SvelteKit-style entry files that don't call start()
+    if (!this.generateModeSetup && process.env.DONKEYLABS_GENERATE === "1") {
+      this.generateModeSetup = true;
+      // Use beforeExit to output routes after module finishes loading
+      process.on("beforeExit", () => {
+        this.outputRoutesForGeneration();
+        process.exit(0);
+      });
+    }
+
     return this;
   }
 
@@ -568,15 +592,8 @@ export class AppServer {
 
   /**
    * Handle CLI type generation mode.
-   * Call this at the end of your server entry file after registering all routes.
-   * If DONKEYLABS_GENERATE=1 is set, outputs route metadata and exits.
-   * Otherwise, does nothing.
-   *
-   * @example
-   * ```ts
-   * server.use(routes);
-   * server.handleGenerateMode(); // Add this line at the end
-   * ```
+   * @deprecated No longer needed - this is now handled automatically in start() and initialize().
+   * You can safely remove any calls to this method.
    */
   handleGenerateMode(): void {
     if (process.env.DONKEYLABS_GENERATE === "1") {
@@ -704,17 +721,17 @@ export class AppServer {
   ): string {
     const baseImport =
       this.typeGenConfig?.baseImport ??
-      'import { UnifiedApiClientBase, type ClientOptions } from "@donkeylabs/adapter-sveltekit/client";';
-    const baseClass = this.typeGenConfig?.baseClass ?? "UnifiedApiClientBase";
+      'import { ApiClientBase, type ApiClientOptions, type RequestOptions } from "@donkeylabs/server/client";';
+    const baseClass = this.typeGenConfig?.baseClass ?? "ApiClientBase";
     const constructorSignature =
-      this.typeGenConfig?.constructorSignature ?? "options?: ClientOptions";
+      this.typeGenConfig?.constructorSignature ?? "baseUrl: string, options?: ApiClientOptions";
     const constructorBody =
-      this.typeGenConfig?.constructorBody ?? "super(options);";
+      this.typeGenConfig?.constructorBody ?? "super(baseUrl, options);";
     const defaultFactory = `/**
  * Create an API client instance
  */
-export function createApi(options?: ClientOptions) {
-  return new ApiClient(options);
+export function createApiClient(baseUrl: string, options?: ApiClientOptions) {
+  return new ApiClient(baseUrl, options);
 }`;
     const factoryFunction = this.typeGenConfig?.factoryFunction ?? defaultFactory;
 
@@ -866,16 +883,19 @@ ${indent}export type ${routeNs} = { Input: ${routeNs}.Input; Events: ${routeNs}.
     // rootNode children are top-level namespaces (api, health) -> Top Level Class Properties
     const methodBlocks: string[] = [generateMethodBlock(rootNode, "  ", "", true)];
 
-    // Check if we have any SSE routes to know if we need SSE type imports
+    // Check what additional imports we need (SSE types not in base import)
     const hasSSERoutes = routes.some(r => r.handler === "sse");
-    const sseImports = hasSSERoutes
-      ? '\nimport { type SSEOptions, type SSESubscription } from "@donkeylabs/server/client";'
-      : "";
+
+    const additionalImports: string[] = [];
+    if (hasSSERoutes) {
+      additionalImports.push('import { type SSEOptions, type SSESubscription } from "@donkeylabs/server/client";');
+    }
+    const extraImports = additionalImports.length > 0 ? '\n' + additionalImports.join('\n') : "";
 
     return `// Auto-generated by @donkeylabs/server
 // DO NOT EDIT MANUALLY
 
-${baseImport}${sseImports}
+${baseImport}${extraImports}
 
 // Utility type that forces TypeScript to expand types on hover
 type Expand<T> = T extends infer O ? { [K in keyof O]: O[K] } : never;
@@ -925,6 +945,12 @@ ${factoryFunction}
    * Used by adapters (e.g., SvelteKit) that manage their own HTTP server.
    */
   async initialize(): Promise<void> {
+    // Handle CLI type generation mode - exit early before any initialization
+    if (process.env.DONKEYLABS_GENERATE === "1") {
+      this.outputRoutesForGeneration();
+      process.exit(0);
+    }
+
     const { logger } = this.coreServices;
 
     // Auto-generate types in dev mode if configured
@@ -1142,12 +1168,19 @@ ${factoryFunction}
   /**
    * Start the server.
    * This will:
-   * 1. Run all plugin migrations
-   * 2. Initialize all plugins in dependency order
-   * 3. Start cron and jobs services
-   * 4. Start the HTTP server
+   * 1. Check for CLI generate mode (DONKEYLABS_GENERATE=1)
+   * 2. Run all plugin migrations
+   * 3. Initialize all plugins in dependency order
+   * 4. Start cron and jobs services
+   * 5. Start the HTTP server
    */
   async start() {
+    // Handle CLI type generation mode - exit early before any initialization
+    if (process.env.DONKEYLABS_GENERATE === "1") {
+      this.outputRoutesForGeneration();
+      process.exit(0);
+    }
+
     const { logger } = this.coreServices;
 
     // Auto-generate types in dev mode if configured
@@ -1370,6 +1403,9 @@ ${factoryFunction}
 
     // Stop audit service (cleanup timers)
     this.coreServices.audit.stop();
+
+    // Stop storage (cleanup connections)
+    this.coreServices.storage.stop();
 
     logger.info("Server shutdown complete");
   }

@@ -435,7 +435,13 @@ demo.route("websocket.clients").typed(
     }),
     output: z.object({
       count: z.number(),
-      clients: z.array(z.string()),
+      clients: z.array(
+        z.object({
+          id: z.string(),
+          connectedAt: z.date(),
+          channels: z.array(z.string()),
+        })
+      ),
     }),
     handle: async (input, ctx) => {
       return ctx.plugins.demo.wsGetClients(input.channel);

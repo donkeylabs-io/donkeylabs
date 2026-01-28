@@ -15,6 +15,7 @@ import type { Workflows } from "./core/workflows";
 import type { Processes } from "./core/processes";
 import type { Audit } from "./core/audit";
 import type { WebSocketService } from "./core/websocket";
+import type { Storage } from "./core/storage";
 
 export interface PluginRegistry {}
 
@@ -107,6 +108,7 @@ export interface CoreServices {
   processes: Processes;
   audit: Audit;
   websocket: WebSocketService;
+  storage: Storage;
 }
 
 /**
@@ -147,7 +149,7 @@ export interface GlobalContext {
   /** Application config */
   config: Record<string, any>;
   /** Custom user-registered services - typed via ServiceRegistry augmentation */
-  services: ServiceRegistry & Record<string, any>;
+  services: ServiceRegistry;
   /** Client IP address */
   ip: string;
   /** Unique request ID */

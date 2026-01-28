@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/server",
-  "version": "2.0.9",
+  "version": "2.0.10",
   "type": "module",
   "description": "Type-safe plugin system for building RPC-style APIs with Bun",
   "main": "./src/index.ts",
@@ -66,7 +66,17 @@
   "peerDependencies": {
     "typescript": "^5",
     "kysely": "^0.27.0 || ^0.28.0",
-    "zod": "^3.20.0"
+    "zod": "^3.20.0",
+    "@aws-sdk/client-s3": "^3.0.0",
+    "@aws-sdk/s3-request-presigner": "^3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@aws-sdk/client-s3": {
+      "optional": true
+    },
+    "@aws-sdk/s3-request-presigner": {
+      "optional": true
+    }
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.25.2",

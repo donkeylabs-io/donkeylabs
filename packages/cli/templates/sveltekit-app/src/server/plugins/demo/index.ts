@@ -157,7 +157,11 @@ export const demoPlugin = createPlugin.define({
         return { success: true };
       },
       wsGetClients: (channel?: string) => {
-        const clients = ctx.core.websocket.getClients(channel);
+        const allClients = ctx.core.websocket.getClients();
+        // Filter by channel if provided
+        const clients = channel
+          ? allClients.filter((c) => c.channels.includes(channel))
+          : allClients;
         return {
           count: clients.length,
           clients,

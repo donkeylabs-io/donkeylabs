@@ -26,6 +26,11 @@ export const server = new AppServer({
   generateTypes: {
     output: "./src/lib/api.ts",
   },
+  // Admin dashboard - enabled in dev mode
+  admin: {
+    enabled: true,
+    prefix: "admin",
+  },
 });
 
 // =============================================================================
@@ -119,6 +124,3 @@ server.use(permissionsRouter);
 server.use(tenantsRouter);
 server.use(demoRoutes);
 server.use(exampleRouter);
-
-// Handle CLI type generation (must be after routes are registered)
-server.handleGenerateMode();

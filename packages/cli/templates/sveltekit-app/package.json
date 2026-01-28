@@ -23,9 +23,9 @@
     "vite": "^7.2.6"
   },
   "dependencies": {
-    "@donkeylabs/cli": "^1.1.19",
-    "@donkeylabs/adapter-sveltekit": "^1.1.19",
-    "@donkeylabs/server": "^1.1.19",
+    "@donkeylabs/cli": "latest",
+    "@donkeylabs/adapter-sveltekit": "latest",
+    "@donkeylabs/server": "latest",
     "bits-ui": "^2.15.4",
     "clsx": "^2.1.1",
     "kysely": "^0.27.6",
