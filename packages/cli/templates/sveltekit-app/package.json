@@ -25,7 +25,7 @@
   "dependencies": {
     "@donkeylabs/cli": "^2.0.9",
     "@donkeylabs/adapter-sveltekit": "^2.0.10",
-    "@donkeylabs/server": "^2.0.12",
+    "@donkeylabs/server": "^2.0.13",
     "bits-ui": "^2.15.4",
     "clsx": "^2.1.1",
     "kysely": "^0.27.6",
