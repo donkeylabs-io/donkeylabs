@@ -201,6 +201,18 @@ export interface WorkflowContext {
 // Workflow Adapter (Persistence)
 // ============================================
 
+/** Options for listing all workflow instances */
+export interface GetAllWorkflowsOptions {
+  /** Filter by status */
+  status?: WorkflowStatus;
+  /** Filter by workflow name */
+  workflowName?: string;
+  /** Max number of instances to return (default: 100) */
+  limit?: number;
+  /** Skip first N instances (for pagination) */
+  offset?: number;
+}
+
 export interface WorkflowAdapter {
   createInstance(instance: Omit<WorkflowInstance, "id">): Promise<WorkflowInstance>;
   getInstance(instanceId: string): Promise<WorkflowInstance | null>;
@@ -208,6 +220,8 @@ export interface WorkflowAdapter {
   deleteInstance(instanceId: string): Promise<boolean>;
   getInstancesByWorkflow(workflowName: string, status?: WorkflowStatus): Promise<WorkflowInstance[]>;
   getRunningInstances(): Promise<WorkflowInstance[]>;
+  /** Get all workflow instances with optional filtering (for admin dashboard) */
+  getAllInstances(options?: GetAllWorkflowsOptions): Promise<WorkflowInstance[]>;
 }
 
 // In-memory adapter
@@ -260,6 +274,23 @@ export class MemoryWorkflowAdapter implements WorkflowAdapter {
       }
     }
     return results;
+  }
+
+  async getAllInstances(options: GetAllWorkflowsOptions = {}): Promise<WorkflowInstance[]> {
+    const { status, workflowName, limit = 100, offset = 0 } = options;
+    const results: WorkflowInstance[] = [];
+
+    for (const instance of this.instances.values()) {
+      if (status && instance.status !== status) continue;
+      if (workflowName && instance.workflowName !== workflowName) continue;
+      results.push(instance);
+    }
+
+    // Sort by createdAt descending (newest first)
+    results.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    // Apply pagination
+    return results.slice(offset, offset + limit);
   }
 }
 
@@ -519,6 +550,8 @@ export interface Workflows {
   cancel(instanceId: string): Promise<boolean>;
   /** Get all instances of a workflow */
   getInstances(workflowName: string, status?: WorkflowStatus): Promise<WorkflowInstance[]>;
+  /** Get all workflow instances with optional filtering (for admin dashboard) */
+  getAllInstances(options?: GetAllWorkflowsOptions): Promise<WorkflowInstance[]>;
   /** Resume workflows after server restart */
   resume(): Promise<void>;
   /** Stop the workflow service */
@@ -622,6 +655,10 @@ class WorkflowsImpl implements Workflows {
 
   async getInstances(workflowName: string, status?: WorkflowStatus): Promise<WorkflowInstance[]> {
     return this.adapter.getInstancesByWorkflow(workflowName, status);
+  }
+
+  async getAllInstances(options?: GetAllWorkflowsOptions): Promise<WorkflowInstance[]> {
+    return this.adapter.getAllInstances(options);
   }
 
   async resume(): Promise<void> {

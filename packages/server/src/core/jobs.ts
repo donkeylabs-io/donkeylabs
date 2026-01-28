@@ -61,6 +61,18 @@ export interface JobHandler<T = any, R = any> {
   (data: T): Promise<R>;
 }
 
+/** Options for listing all jobs */
+export interface GetAllJobsOptions {
+  /** Filter by status */
+  status?: JobStatus;
+  /** Filter by job name */
+  name?: string;
+  /** Max number of jobs to return (default: 100) */
+  limit?: number;
+  /** Skip first N jobs (for pagination) */
+  offset?: number;
+}
+
 export interface JobAdapter {
   create(job: Omit<Job, "id">): Promise<Job>;
   get(jobId: string): Promise<Job | null>;
@@ -73,6 +85,8 @@ export interface JobAdapter {
   getRunningExternal(): Promise<Job[]>;
   /** Get external jobs that need reconnection after server restart */
   getOrphanedExternal(): Promise<Job[]>;
+  /** Get all jobs with optional filtering (for admin dashboard) */
+  getAll(options?: GetAllJobsOptions): Promise<Job[]>;
 }
 
 export interface JobsConfig {
@@ -109,6 +123,8 @@ export interface Jobs {
   getByName(name: string, status?: JobStatus): Promise<Job[]>;
   /** Get all running external jobs */
   getRunningExternal(): Promise<Job[]>;
+  /** Get all jobs with optional filtering (for admin dashboard) */
+  getAll(options?: GetAllJobsOptions): Promise<Job[]>;
   /** Start the job processing loop */
   start(): void;
   /** Stop the job processing and cleanup */
@@ -191,6 +207,23 @@ export class MemoryJobAdapter implements JobAdapter {
       }
     }
     return results;
+  }
+
+  async getAll(options: GetAllJobsOptions = {}): Promise<Job[]> {
+    const { status, name, limit = 100, offset = 0 } = options;
+    const results: Job[] = [];
+
+    for (const job of this.jobs.values()) {
+      if (status && job.status !== status) continue;
+      if (name && job.name !== name) continue;
+      results.push(job);
+    }
+
+    // Sort by createdAt descending (newest first)
+    results.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    // Apply pagination
+    return results.slice(offset, offset + limit);
   }
 }
 
@@ -333,6 +366,10 @@ class JobsImpl implements Jobs {
 
   async getRunningExternal(): Promise<Job[]> {
     return this.adapter.getRunningExternal();
+  }
+
+  async getAll(options?: GetAllJobsOptions): Promise<Job[]> {
+    return this.adapter.getAll(options);
   }
 
   start(): void {
