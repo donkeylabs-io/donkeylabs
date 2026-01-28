@@ -9,7 +9,7 @@
 import type { Plugin, ViteDevServer } from "vite";
 import { spawn, type ChildProcess, exec } from "node:child_process";
 import { resolve, join } from "node:path";
-import { watch, type FSWatcher } from "node:fs";
+import { watch, type FSWatcher, existsSync } from "node:fs";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
@@ -41,6 +41,19 @@ export interface DevPluginOptions {
    * @default "./src/server"
    */
   watchDir?: string;
+
+  /**
+   * Enable hot reload for route files (dev mode only).
+   * When a route file changes, the router will be reloaded without server restart.
+   * @default true
+   */
+  hotReloadRoutes?: boolean;
+
+  /**
+   * Glob patterns for route files to watch for hot reload.
+   * @default ["**\/routes\/**\/*.ts"]
+   */
+  routePatterns?: string[];
 }
 
 // Check if running with Bun runtime (bun --bun)
@@ -87,6 +100,8 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
     backendPort = 3001,
     watchTypes = true,
     watchDir = "./src/server",
+    hotReloadRoutes = true,
+    routePatterns = ["**/routes/**/*.ts", "**/routes/**/*.js"],
   } = options;
 
   // State for subprocess mode
@@ -96,6 +111,7 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
   // State for in-process mode
   let appServer: any = null;
   let serverReady = false;
+  let viteServer: ViteDevServer | null = null;
 
   // State for file watcher
   let fileWatcher: FSWatcher | null = null;
@@ -103,11 +119,82 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
   let lastGenerationTime = 0;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // State for hot reload
+  let hotReloadTimer: ReturnType<typeof setTimeout> | null = null;
+  const HOT_RELOAD_DEBOUNCE_MS = 100;
+
   const COOLDOWN_MS = 2000;
   const DEBOUNCE_MS = 500;
 
   // Patterns to ignore (generated files)
-  const IGNORED_PATTERNS = [/schema\.ts$/, /\.d\.ts$/];
+  const IGNORED_PATTERNS = [/schema\.ts$/, /\.d\.ts$/, /api\.ts$/];
+
+  // Check if a file matches route patterns
+  function isRouteFile(filename: string): boolean {
+    return routePatterns.some((pattern) => {
+      // Simple glob matching for common patterns
+      const regexPattern = pattern
+        .replace(/\*\*/g, ".*")
+        .replace(/\*/g, "[^/]*")
+        .replace(/\./g, "\\.");
+      return new RegExp(regexPattern).test(filename);
+    });
+  }
+
+  // Hot reload a route file
+  async function hotReloadRoute(filepath: string) {
+    if (!appServer || !serverReady || !viteServer || !hotReloadRoutes) return;
+
+    console.log("\x1b[36m[donkeylabs-dev]\x1b[0m Hot reloading route:", filepath);
+
+    try {
+      // Invalidate the module in Vite's cache
+      const mod = viteServer.moduleGraph.getModuleById(filepath);
+      if (mod) {
+        viteServer.moduleGraph.invalidateModule(mod);
+      }
+
+      // Re-import the module with cache busting
+      const timestamp = Date.now();
+      const moduleUrl = `${filepath}?t=${timestamp}`;
+
+      // Import the fresh module
+      const freshModule = await viteServer.ssrLoadModule(moduleUrl);
+
+      // Find the router export (could be named 'router', 'default', or end with 'Router')
+      let newRouter = freshModule.router || freshModule.default;
+      if (!newRouter) {
+        for (const key of Object.keys(freshModule)) {
+          if (key.endsWith("Router") && typeof freshModule[key]?.getRoutes === "function") {
+            newRouter = freshModule[key];
+            break;
+          }
+        }
+      }
+
+      if (newRouter && typeof newRouter.getRoutes === "function") {
+        // Get the router prefix
+        const prefix = newRouter.getPrefix?.() || "";
+        if (prefix) {
+          appServer.reloadRouter(prefix, newRouter);
+          console.log("\x1b[32m[donkeylabs-dev]\x1b[0m Route hot reload complete:", prefix);
+        } else {
+          // If no prefix, rebuild all routes
+          appServer.rebuildRouteMap();
+          console.log("\x1b[32m[donkeylabs-dev]\x1b[0m Route map rebuilt");
+        }
+      } else {
+        console.warn("\x1b[33m[donkeylabs-dev]\x1b[0m No router export found in:", filepath);
+      }
+    } catch (err: any) {
+      console.error("\x1b[31m[donkeylabs-dev]\x1b[0m Hot reload error:", err.message);
+    }
+  }
+
+  function debouncedHotReload(filepath: string) {
+    if (hotReloadTimer) clearTimeout(hotReloadTimer);
+    hotReloadTimer = setTimeout(() => hotReloadRoute(filepath), HOT_RELOAD_DEBOUNCE_MS);
+  }
 
   function shouldIgnoreFile(filename: string): boolean {
     return IGNORED_PATTERNS.some((pattern) => pattern.test(filename));
@@ -122,10 +209,35 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
     console.log("\x1b[36m[donkeylabs-dev]\x1b[0m Server files changed, regenerating types...");
 
     try {
-      await execAsync("bunx donkeylabs generate");
+      await execAsync("bun run gen:types");
       console.log("\x1b[32m[donkeylabs-dev]\x1b[0m Types regenerated successfully");
     } catch (e: any) {
       console.error("\x1b[31m[donkeylabs-dev]\x1b[0m Error regenerating types:", e.message);
+    } finally {
+      isGenerating = false;
+      lastGenerationTime = Date.now();
+    }
+  }
+
+  async function ensureTypesGenerated() {
+    // Check if the client file exists (common locations)
+    const clientPaths = [
+      resolve(process.cwd(), "src/lib/api.ts"),
+      resolve(process.cwd(), "src/api.ts"),
+    ];
+
+    const clientExists = clientPaths.some((p) => existsSync(p));
+    if (clientExists) return;
+
+    console.log("\x1b[36m[donkeylabs-dev]\x1b[0m Generated client not found, running initial type generation...");
+    isGenerating = true;
+
+    try {
+      await execAsync("bun run gen:types");
+      console.log("\x1b[32m[donkeylabs-dev]\x1b[0m Initial types generated successfully");
+    } catch (e: any) {
+      console.warn("\x1b[33m[donkeylabs-dev]\x1b[0m Initial type generation failed:", e.message);
+      console.warn("\x1b[33m[donkeylabs-dev]\x1b[0m Run 'bun run gen:types' manually to generate types");
     } finally {
       isGenerating = false;
       lastGenerationTime = Date.now();
@@ -138,17 +250,34 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
   }
 
   function startFileWatcher() {
-    if (!watchTypes || fileWatcher) return;
+    if (fileWatcher) return;
+    if (!watchTypes && !hotReloadRoutes) return;
 
     const watchPath = resolve(process.cwd(), watchDir);
     try {
       fileWatcher = watch(watchPath, { recursive: true }, (_eventType, filename) => {
         if (!filename) return;
-        if (!filename.endsWith(".ts")) return;
+        if (!filename.endsWith(".ts") && !filename.endsWith(".js")) return;
         if (shouldIgnoreFile(filename)) return;
-        debouncedRegenerate();
+
+        const fullPath = join(watchPath, filename);
+
+        // Check if this is a route file for hot reload
+        if (hotReloadRoutes && isRouteFile(filename)) {
+          debouncedHotReload(fullPath);
+        }
+
+        // Also trigger type regeneration
+        if (watchTypes) {
+          debouncedRegenerate();
+        }
       });
-      console.log(`\x1b[36m[donkeylabs-dev]\x1b[0m Watching ${watchDir} for changes...`);
+
+      const features = [
+        watchTypes ? "type generation" : null,
+        hotReloadRoutes ? "hot reload" : null,
+      ].filter(Boolean).join(", ");
+      console.log(`\x1b[36m[donkeylabs-dev]\x1b[0m Watching ${watchDir} for ${features}...`);
     } catch (err) {
       console.warn(`\x1b[33m[donkeylabs-dev]\x1b[0m Could not watch ${watchDir}:`, err);
     }
@@ -156,6 +285,7 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
 
   function stopFileWatcher() {
     if (debounceTimer) clearTimeout(debounceTimer);
+    if (hotReloadTimer) clearTimeout(hotReloadTimer);
     if (fileWatcher) {
       fileWatcher.close();
       fileWatcher = null;
@@ -183,7 +313,13 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
     async configureServer(server: ViteDevServer) {
       const serverEntryResolved = resolve(process.cwd(), serverEntry);
 
-      // Start file watcher for auto type regeneration
+      // Store vite server reference for hot reload
+      viteServer = server;
+
+      // Ensure types are generated on first start (if client file doesn't exist)
+      await ensureTypesGenerated();
+
+      // Start file watcher for auto type regeneration and hot reload
       startFileWatcher();
 
       if (isBunRuntime) {
@@ -576,6 +712,7 @@ export function donkeylabsDev(options: DevPluginOptions = {}): Plugin {
 
     async closeBundle() {
       stopFileWatcher();
+      viteServer = null;
       if (backendProcess) {
         backendProcess.kill();
         backendProcess = null;

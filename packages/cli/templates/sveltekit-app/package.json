@@ -7,7 +7,7 @@
     "dev": "bun --bun vite dev",
     "build": "bun run gen:types && vite build",
     "preview": "bun build/server/entry.js",
-    "prepare": "bun --bun svelte-kit sync || echo ''",
+    "prepare": "bun --bun svelte-kit sync && bun run gen:types || echo ''",
     "check": "bun --bun svelte-kit sync && bun --bun svelte-check --tsconfig ./tsconfig.json",
     "gen:types": "donkeylabs generate",
     "cli": "donkeylabs"
@@ -23,8 +23,8 @@
     "vite": "^7.2.6"
   },
   "dependencies": {
-    "@donkeylabs/cli": "^2.0.11",
-    "@donkeylabs/adapter-sveltekit": "^2.0.12",
+    "@donkeylabs/cli": "^2.0.12",
+    "@donkeylabs/adapter-sveltekit": "^2.0.13",
     "@donkeylabs/server": "^2.0.15",
     "bits-ui": "^2.15.4",
     "clsx": "^2.1.1",
