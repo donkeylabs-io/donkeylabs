@@ -1145,9 +1145,9 @@ ${factoryFunction}
         );
         // Extract result from Response
         if (response instanceof Response) {
-          return response.json();
+          return response.json() as Promise<TOutput>;
         }
-        return response;
+        return response as TOutput;
       } else {
         return await finalHandler();
       }
