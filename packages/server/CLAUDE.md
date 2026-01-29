@@ -139,11 +139,31 @@ throw ctx.errors.BadRequest("Invalid input");    // 400
 throw ctx.errors.Unauthorized("Login required"); // 401
 ```
 
+## Testing
+```ts
+// Unit test plugins (no HTTP)
+import { createTestHarness } from "@donkeylabs/server";
+const { manager } = await createTestHarness(myPlugin);
+
+// Integration test with HTTP (parallel-safe, unique ports)
+import { createIntegrationHarness } from "@donkeylabs/server";
+import { createApiClient } from "../lib/api";
+
+const harness = await createIntegrationHarness({
+  routers: [usersRouter],
+  plugins: [usersPlugin],
+});
+const api = harness.createClient(createApiClient); // Fully typed!
+await api.users.create({ name: "Test" });
+await harness.shutdown();
+```
+
 ## Commands
 ```sh
 bun run dev               # Dev server
 bunx donkeylabs generate  # Regen types after changes
 bun --bun tsc --noEmit    # Type check
+bun test                  # Run tests
 ```
 
 ## MCP Tools
@@ -154,4 +174,5 @@ bun --bun tsc --noEmit    # Type check
 - Core: logger, cache, events, cron, jobs, external-jobs, processes, workflows, sse, rate-limiter, errors
 - API: router, handlers, middleware
 - Server: lifecycle-hooks, services (custom services)
-- Infrastructure: database, plugins, testing, sveltekit-adapter, api-client
+- Testing: `createTestHarness` (unit), `createIntegrationHarness` (HTTP)
+- Infrastructure: database, plugins, sveltekit-adapter, api-client

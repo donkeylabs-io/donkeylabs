@@ -121,5 +121,11 @@ export {
   createAdminRouter,
 } from "./admin";
 
-// Test Harness - for plugin testing
-export { createTestHarness } from "./harness";
+// Test Harness - for plugin and integration testing
+export {
+  createTestHarness,
+  createIntegrationHarness,
+  TestApiClient,
+  type IntegrationHarnessOptions,
+  type IntegrationHarnessResult,
+} from "./harness";

@@ -1,25 +1,61 @@
 # Testing
 
-This guide covers testing plugins and routes using the built-in test harness.
+This guide covers testing plugins and routes using the built-in test harnesses.
 
 ## Table of Contents
 
-- [Test Harness](#test-harness)
+- [Quick Start](#quick-start)
+- [Test Harnesses](#test-harnesses)
+  - [createTestHarness](#createtestharness) - Unit testing plugins
+  - [createIntegrationHarness](#createintegrationharness) - Full HTTP API testing
 - [Unit Testing Plugins](#unit-testing-plugins)
-- [Integration Testing](#integration-testing)
+- [Integration Testing with HTTP](#integration-testing-with-http)
 - [Testing Routes](#testing-routes)
+- [Parallel Test Execution](#parallel-test-execution)
 - [Mocking Core Services](#mocking-core-services)
 - [Test Organization](#test-organization)
 - [Running Tests](#running-tests)
 
 ---
 
-## Test Harness
-
-The test harness creates a fully functional in-memory testing environment with real SQLite, migrations, and all core services.
+## Quick Start
 
 ```ts
-import { createTestHarness } from "@donkeylabs/server/harness";
+// Unit test (no HTTP, fast)
+import { createTestHarness } from "@donkeylabs/server";
+const { manager } = await createTestHarness(myPlugin);
+const result = await manager.getServices().myPlugin.doSomething();
+
+// Integration test (full HTTP server)
+import { createIntegrationHarness } from "@donkeylabs/server";
+import { createApiClient } from "../lib/api"; // Your generated client
+
+const harness = await createIntegrationHarness({
+  routers: [myRouter],
+  plugins: [myPlugin],
+});
+const api = harness.createClient(createApiClient);
+const user = await api.users.create({ name: "Test" }); // Fully typed!
+await harness.shutdown();
+```
+
+---
+
+## Test Harnesses
+
+DonkeyLabs provides two test harnesses for different testing needs:
+
+| Harness | Use Case | HTTP Server | Speed |
+|---------|----------|-------------|-------|
+| `createTestHarness` | Unit testing plugins | No | Fast |
+| `createIntegrationHarness` | Full API testing | Yes | Medium |
+
+### createTestHarness
+
+For unit testing plugin services without HTTP overhead. Creates an in-memory environment with SQLite, migrations, and all core services.
+
+```ts
+import { createTestHarness } from "@donkeylabs/server";
 import { myPlugin } from "./plugins/myPlugin";
 
 const { manager, db, core } = await createTestHarness(myPlugin);
@@ -35,12 +71,12 @@ core.logger.info("Test log");
 core.cache.set("key", "value");
 ```
 
-### With Dependencies
+#### With Dependencies
 
 If your plugin depends on other plugins, pass them as the second argument:
 
 ```ts
-import { createTestHarness } from "@donkeylabs/server/harness";
+import { createTestHarness } from "@donkeylabs/server";
 import { ordersPlugin } from "./plugins/orders";
 import { usersPlugin } from "./plugins/users";
 
@@ -49,6 +85,65 @@ const { manager } = await createTestHarness(ordersPlugin, [usersPlugin]);
 
 const orders = manager.getServices().orders;
 const users = manager.getServices().users;
+```
+
+### createIntegrationHarness
+
+For full HTTP API testing with your generated client. Starts a real HTTP server on a unique port for parallel test execution.
+
+```ts
+import { createIntegrationHarness, type IntegrationHarnessResult } from "@donkeylabs/server";
+import { createApiClient } from "../lib/api"; // Your generated client
+import { usersRouter } from "../server/routes/users";
+import { usersPlugin } from "../server/plugins/users";
+
+describe("Users API", () => {
+  let harness: IntegrationHarnessResult;
+  let api: ReturnType<typeof createApiClient>;
+
+  beforeAll(async () => {
+    harness = await createIntegrationHarness({
+      routers: [usersRouter],
+      plugins: [usersPlugin],
+    });
+    api = harness.createClient(createApiClient);
+  });
+
+  afterAll(async () => {
+    await harness.shutdown();
+  });
+
+  it("should create a user", async () => {
+    const user = await api.users.create({ name: "Test", email: "test@example.com" });
+    expect(user.id).toBeDefined();
+  });
+});
+```
+
+#### Harness Result Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `server` | `AppServer` | The running server instance |
+| `baseUrl` | `string` | Base URL (e.g., `http://localhost:12345`) |
+| `port` | `number` | Actual port the server is running on |
+| `db` | `Kysely<any>` | Database instance for direct queries |
+| `core` | `CoreServices` | Core services (logger, cache, etc.) |
+| `plugins` | `Record<string, any>` | Plugin services |
+| `client` | `TestApiClient` | Untyped client for quick testing |
+| `createClient` | `<T>(factory) => T` | Create typed client from your factory |
+| `shutdown` | `() => Promise<void>` | Cleanup function |
+
+#### Configuration Options
+
+```ts
+interface IntegrationHarnessOptions {
+  routers?: IRouter[];           // Routers to register
+  plugins?: Plugin[];            // Plugins to register
+  port?: number;                 // Starting port (default: random 10000-60000)
+  maxPortAttempts?: number;      // Retry attempts (default: 10)
+  logLevel?: "debug" | "info" | "warn" | "error"; // Default: "error"
+}
 ```
 
 ---
@@ -138,9 +233,93 @@ describe("usersPlugin", () => {
 
 ---
 
-## Integration Testing
+## Integration Testing with HTTP
 
-Integration tests verify multiple plugins working together.
+Use `createIntegrationHarness` for full end-to-end API testing with your generated client.
+
+### Basic Example
+
+```ts
+import { describe, it, expect, beforeAll, afterAll } from "bun:test";
+import { createIntegrationHarness, type IntegrationHarnessResult } from "@donkeylabs/server";
+import { createApiClient } from "../lib/api";
+import { usersRouter } from "../server/routes/users";
+
+describe("Users API", () => {
+  let harness: IntegrationHarnessResult;
+  let api: ReturnType<typeof createApiClient>;
+
+  beforeAll(async () => {
+    harness = await createIntegrationHarness({
+      routers: [usersRouter],
+    });
+    api = harness.createClient(createApiClient);
+  });
+
+  afterAll(async () => {
+    await harness.shutdown();
+  });
+
+  it("should create and retrieve a user", async () => {
+    // Create
+    const created = await api.users.create({
+      name: "Test User",
+      email: "test@example.com",
+    });
+    expect(created.id).toBeDefined();
+
+    // Retrieve
+    const user = await api.users.get({ id: created.id });
+    expect(user.name).toBe("Test User");
+  });
+
+  it("should list users", async () => {
+    const result = await api.users.list({});
+    expect(result.users.length).toBeGreaterThan(0);
+  });
+});
+```
+
+### With Plugins
+
+```ts
+import { usersPlugin } from "../server/plugins/users";
+import { ordersPlugin } from "../server/plugins/orders";
+import { ordersRouter } from "../server/routes/orders";
+
+const harness = await createIntegrationHarness({
+  routers: [ordersRouter],
+  plugins: [usersPlugin, ordersPlugin],
+});
+```
+
+### Accessing Services Directly
+
+You can access plugin services and core services for test setup:
+
+```ts
+it("should process order for existing user", async () => {
+  // Use plugin service directly to create test data
+  const user = await harness.plugins.users.create({
+    email: "buyer@example.com",
+    name: "Buyer",
+  });
+
+  // Test via API
+  const order = await api.orders.create({
+    userId: user.id,
+    items: [{ productId: 1, quantity: 2 }],
+  });
+
+  expect(order.status).toBe("pending");
+});
+```
+
+---
+
+## Integration Testing (Plugin-Level)
+
+Integration tests verify multiple plugins working together without HTTP.
 
 ```ts
 // tests/checkout.integ.test.ts
@@ -419,12 +598,83 @@ jobs:
 
 ---
 
+## Parallel Test Execution
+
+`createIntegrationHarness` is designed for parallel test execution:
+
+1. **Unique ports** - Each harness gets a random port (10000-60000 range)
+2. **Automatic retry** - If port is in use, tries next port (up to 10 attempts)
+3. **In-memory isolation** - Each test has its own SQLite `:memory:` database
+4. **No file conflicts** - Type generation is disabled during tests
+
+### Example: Parallel Test Suites
+
+```ts
+// users.test.ts
+describe("Users API", () => {
+  let harness: IntegrationHarnessResult;
+
+  beforeAll(async () => {
+    harness = await createIntegrationHarness({ routers: [usersRouter] });
+  });
+  afterAll(() => harness.shutdown());
+
+  it("creates users", async () => {
+    // This test runs on port 12345 (random)
+  });
+});
+
+// orders.test.ts (runs in parallel)
+describe("Orders API", () => {
+  let harness: IntegrationHarnessResult;
+
+  beforeAll(async () => {
+    harness = await createIntegrationHarness({ routers: [ordersRouter] });
+  });
+  afterAll(() => harness.shutdown());
+
+  it("creates orders", async () => {
+    // This test runs on port 54321 (different random port)
+  });
+});
+```
+
+Both test files run simultaneously without conflicts.
+
+### Why Use the Generated Client?
+
+The generated client (`lib/api.ts`) provides:
+- Full TypeScript types for all routes
+- IDE autocomplete while writing tests
+- Compile-time error checking
+
+The client is generated once during development (`bunx donkeylabs generate`) and imported in tests. No regeneration happens at test runtime.
+
+---
+
 ## Best Practices
 
-1. **Use fresh harness per test** - Create a new harness in `beforeEach` to ensure test isolation
-2. **Test the public API** - Focus on testing service methods, not internal implementation
-3. **Use realistic data** - Create test data that resembles production data
-4. **Test edge cases** - Empty inputs, null values, boundary conditions
-5. **Test error cases** - Verify proper error throwing and handling
-6. **Keep tests fast** - In-memory SQLite is fast; avoid unnecessary delays
-7. **Run type checks** - Always run `tsc --noEmit` before committing
+1. **Choose the right harness**:
+   - `createTestHarness` for unit tests (fast, no HTTP)
+   - `createIntegrationHarness` for API tests (full HTTP, typed client)
+
+2. **Use fresh harness per test suite** - Create harness in `beforeAll`, shutdown in `afterAll`
+
+3. **Always call shutdown** - Prevent port leaks and hanging tests:
+   ```ts
+   afterAll(() => harness.shutdown());
+   ```
+
+4. **Use your generated client** - Import from `lib/api.ts` for full type safety
+
+5. **Test the public API** - Focus on testing service methods, not internal implementation
+
+6. **Use realistic data** - Create test data that resembles production data
+
+7. **Test edge cases** - Empty inputs, null values, boundary conditions
+
+8. **Test error cases** - Verify proper error throwing and handling
+
+9. **Keep tests fast** - In-memory SQLite is fast; avoid unnecessary delays
+
+10. **Run type checks** - Always run `tsc --noEmit` before committing
