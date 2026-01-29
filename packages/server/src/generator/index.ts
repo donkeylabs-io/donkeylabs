@@ -300,6 +300,92 @@ export function groupRoutesByPrefix(routes: RouteInfo[]): Map<string, RouteInfo[
   return groups;
 }
 
+/**
+ * Represents a node in the namespace tree
+ */
+interface NamespaceNode {
+  methods: string[]; // Method definitions at this level
+  children: Map<string, NamespaceNode>;
+}
+
+/**
+ * Build a tree structure from route groups to handle multi-level prefixes
+ * e.g., "api.cache" and "api.counter" become:
+ * api -> { cache -> methods, counter -> methods }
+ */
+export function buildNamespaceTree(
+  routeGroups: Map<string, RouteInfo[]>,
+  generateMethod: (route: RouteInfo) => string | null
+): Map<string, NamespaceNode> {
+  const tree = new Map<string, NamespaceNode>();
+
+  for (const [prefix, routes] of routeGroups) {
+    const methods = routes
+      .map(generateMethod)
+      .filter((m): m is string => m !== null);
+
+    if (methods.length === 0) continue;
+
+    if (prefix === "_root") {
+      // Root level methods go directly
+      if (!tree.has("_root")) {
+        tree.set("_root", { methods: [], children: new Map() });
+      }
+      tree.get("_root")!.methods.push(...methods);
+      continue;
+    }
+
+    // Split prefix into parts for nested namespaces
+    const parts = prefix.split(".");
+    let current = tree;
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]!;
+      if (!current.has(part)) {
+        current.set(part, { methods: [], children: new Map() });
+      }
+
+      if (i === parts.length - 1) {
+        // Last part - add methods here
+        current.get(part)!.methods.push(...methods);
+      } else {
+        // Intermediate part - continue traversing
+        current = current.get(part)!.children;
+      }
+    }
+  }
+
+  return tree;
+}
+
+/**
+ * Generate nested namespace code from a tree node
+ */
+export function generateNestedNamespaceCode(
+  node: NamespaceNode,
+  indent: string = "    "
+): string {
+  const parts: string[] = [];
+
+  // Add methods at this level with proper indentation
+  for (const method of node.methods) {
+    // Indent each line of the method
+    const indentedMethod = method
+      .split("\n")
+      .map((line, i) => (i === 0 ? `${indent}${line}` : `${indent}  ${line}`))
+      .join("\n");
+    parts.push(indentedMethod);
+  }
+
+  // Add nested namespaces
+  for (const [childName, childNode] of node.children) {
+    const childContent = generateNestedNamespaceCode(childNode, indent + "  ");
+    parts.push(`${indent}${childName}: {\n${childContent}\n${indent}}`);
+  }
+
+  return parts.join(",\n\n");
+}
+
 // ==========================================
 // Client Code Generation
 // ==========================================
@@ -504,59 +590,60 @@ ${typeEntries.join("\n\n")}
   }`);
     }
 
-    const methodEntries = prefixRoutes
-      .filter((r) => r.handler === "typed")
-      .map((r) => {
-        const inputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Input`;
-        const outputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Output`;
-        return `    ${toCamelCase(r.routeName)}: (input: ${inputType}, options?: RequestOptions): Promise<${outputType}> =>
-      this.request("${r.name}", input, options)`;
-      });
+  }
 
-    const rawMethodEntries = prefixRoutes
-      .filter((r) => r.handler === "raw")
-      .map((r) => {
-        return `    ${toCamelCase(r.routeName)}: (init?: RequestInit): Promise<Response> =>
-      this.rawRequest("${r.name}", init)`;
-      });
+  // Build namespace tree for proper nesting (handles multi-level prefixes like "api.cache")
+  const generateMethodForRoute = (r: RouteInfo): string | null => {
+    const namespaceName = r.prefix === "_root" ? "Root" : toPascalCase(r.prefix);
 
-    const sseMethodEntries = prefixRoutes
-      .filter((r) => r.handler === "sse")
-      .map((r) => {
-        const inputType = r.inputSource
-          ? `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Input`
-          : "Record<string, any>";
-        const eventsType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Events`;
-        return `    ${toCamelCase(r.routeName)}: (input: ${inputType}, options?: Omit<SSEOptions, "endpoint" | "channels">): SSESubscription<${eventsType}> =>
-      this.connectToSSERoute("${r.name}", input, options)`;
-      });
-
-    const streamMethodEntries = prefixRoutes
-      .filter((r) => r.handler === "stream" || r.handler === "html")
-      .map((r) => {
-        const inputType = r.inputSource
-          ? `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Input`
-          : "Record<string, any>";
-        return `    ${toCamelCase(r.routeName)}: (input: ${inputType}): Promise<Response> =>
-      this.streamRequest("${r.name}", input)`;
-      });
-
-    const formDataMethodEntries = prefixRoutes
-      .filter((r) => r.handler === "formData")
-      .map((r) => {
-        const inputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Input`;
-        const outputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Output`;
-        return `    ${toCamelCase(r.routeName)}: (fields: ${inputType}, files?: File[]): Promise<${outputType}> =>
-      this.uploadFormData("${r.name}", fields, files)`;
-      });
-
-    const allMethods = [...methodEntries, ...rawMethodEntries, ...sseMethodEntries, ...streamMethodEntries, ...formDataMethodEntries];
-
-    if (allMethods.length > 0) {
-      routeNamespaceBlocks.push(`  ${methodName} = {
-${allMethods.join(",\n\n")}
-  };`);
+    if (r.handler === "typed") {
+      const inputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Input`;
+      const outputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Output`;
+      return `${toCamelCase(r.routeName)}: (input: ${inputType}, options?: RequestOptions): Promise<${outputType}> =>
+        this.request("${r.name}", input, options)`;
     }
+    if (r.handler === "raw") {
+      return `${toCamelCase(r.routeName)}: (init?: RequestInit): Promise<Response> =>
+        this.rawRequest("${r.name}", init)`;
+    }
+    if (r.handler === "sse") {
+      const inputType = r.inputSource
+        ? `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Input`
+        : "Record<string, any>";
+      const eventsType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Events`;
+      return `${toCamelCase(r.routeName)}: (input: ${inputType}, options?: Omit<SSEOptions, "endpoint" | "channels">): SSESubscription<${eventsType}> =>
+        this.connectToSSERoute("${r.name}", input, options)`;
+    }
+    if (r.handler === "stream" || r.handler === "html") {
+      const inputType = r.inputSource
+        ? `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Input`
+        : "Record<string, any>";
+      return `${toCamelCase(r.routeName)}: (input: ${inputType}): Promise<Response> =>
+        this.streamRequest("${r.name}", input)`;
+    }
+    if (r.handler === "formData") {
+      const inputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Input`;
+      const outputType = `Routes.${namespaceName}.${toPascalCase(r.routeName)}.Output`;
+      return `${toCamelCase(r.routeName)}: (fields: ${inputType}, files?: File[]): Promise<${outputType}> =>
+        this.uploadFormData("${r.name}", fields, files)`;
+    }
+    return null;
+  };
+
+  const namespaceTree = buildNamespaceTree(routeGroups, generateMethodForRoute);
+
+  // Generate namespace blocks from tree
+  for (const [topLevel, node] of namespaceTree) {
+    if (topLevel === "_root") {
+      // Root level methods become direct class properties
+      for (const method of node.methods) {
+        routeNamespaceBlocks.push(`  ${method.trim().replace(/^\s+/gm, "  ")};`);
+      }
+      continue;
+    }
+
+    const content = generateNestedNamespaceCode(node, "    ");
+    routeNamespaceBlocks.push(`  ${topLevel} = {\n${content}\n  };`);
   }
 
   // Generate event types

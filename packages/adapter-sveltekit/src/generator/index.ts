@@ -70,198 +70,248 @@ export function createApi(options?: ClientOptions) {
 };
 
 /**
- * Generate a fully-typed SvelteKit-compatible API client
+ * Namespace tree node for building nested client structure
  */
-function generateTypedSvelteKitClient(routes: RouteInfo[]): string {
-  const opts = svelteKitGeneratorOptions;
+interface NamespaceTreeNode {
+  methods: { methodDef: string; typeDef: string }[];
+  children: Map<string, NamespaceTreeNode>;
+}
 
-  // Check if all routes share a common prefix (e.g., "api.") - if so, strip it
-  let routesToProcess = routes;
-  let commonPrefix = "";
-  if (routes.length > 0) {
-    const firstPart = routes[0]?.name.split(".")[0];
-    const allSharePrefix = firstPart && routes.every(r => r.name.startsWith(firstPart + "."));
-    if (allSharePrefix && firstPart) {
-      commonPrefix = firstPart;
-      // Strip the common prefix from route names for client generation
-      routesToProcess = routes.map(r => ({
-        ...r,
-        name: r.name.slice(firstPart.length + 1), // Remove "api." prefix
-        prefix: r.prefix === firstPart ? "" : r.prefix.slice(firstPart.length + 1),
-      }));
-    }
-  }
+/**
+ * Build a nested tree structure from routes
+ * e.g., routes "api.counter.get", "api.cache.set" become:
+ * api -> { counter -> { get }, cache -> { set } }
+ */
+function buildRouteTree(routes: RouteInfo[], commonPrefix: string): Map<string, NamespaceTreeNode> {
+  const tree = new Map<string, NamespaceTreeNode>();
 
-  // Group routes by namespace
-  const groups = new Map<string, RouteInfo[]>();
-  for (const route of routesToProcess) {
+  for (const route of routes) {
+    // Get the path parts for nesting (e.g., "api.counter.get" -> ["api", "counter", "get"])
     const parts = route.name.split(".");
-    const namespace = parts.length > 1 ? parts[0]! : "_root";
-    if (!groups.has(namespace)) {
-      groups.set(namespace, []);
+    const methodName = parts[parts.length - 1]!; // Last part is the method
+    const namespaceParts = parts.slice(0, -1); // Everything before is namespace path
+
+    if (namespaceParts.length === 0) {
+      // Root level method
+      if (!tree.has("_root")) {
+        tree.set("_root", { methods: [], children: new Map() });
+      }
+      tree.get("_root")!.methods.push(generateMethodAndType(route, methodName, "Root", commonPrefix));
+      continue;
     }
-    groups.get(namespace)!.push({
-      ...route,
-      routeName: parts.length > 1 ? parts.slice(1).join(".") : parts[0]!,
-    });
+
+    // Navigate/create the tree path
+    let current = tree;
+    for (let i = 0; i < namespaceParts.length; i++) {
+      const part = namespaceParts[i]!;
+      if (!current.has(part)) {
+        current.set(part, { methods: [], children: new Map() });
+      }
+
+      if (i === namespaceParts.length - 1) {
+        // At the final namespace level - add the method here
+        const pascalNs = toPascalCase(namespaceParts.join("."));
+        current.get(part)!.methods.push(generateMethodAndType(route, methodName, pascalNs, commonPrefix));
+      } else {
+        // Continue traversing
+        current = current.get(part)!.children;
+      }
+    }
   }
 
-  // Generate type definitions
-  const typeBlocks: string[] = [];
-  const methodBlocks: string[] = [];
+  return tree;
+}
 
-  for (const [namespace, nsRoutes] of groups) {
-    const pascalNs = namespace === "_root" ? "Root" : toPascalCase(namespace);
-    const methodNs = namespace === "_root" ? "_root" : namespace;
+/**
+ * Generate method definition and type definition for a route
+ */
+function generateMethodAndType(
+  route: RouteInfo,
+  methodName: string,
+  pascalNs: string,
+  commonPrefix: string
+): { methodDef: string; typeDef: string } {
+  const camelMethod = toCamelCase(methodName);
+  const pascalRoute = toPascalCase(methodName);
+  const fullRouteName = route.name; // Already includes full path
 
-    // Generate types for this namespace (typed, stream, sse, formData, html routes have input types)
-    const typeEntries = nsRoutes
-      .filter(r => ["typed", "stream", "sse", "formData", "html"].includes(r.handler))
-      .map(r => {
-        const pascalRoute = toPascalCase(r.routeName);
-        // If inputSource starts with "z.", it's a Zod source string - convert it
-        // Otherwise it's already a TypeScript type string from getTypedMetadata()
-        const inputType = r.inputSource
-          ? (r.inputSource.trim().startsWith("z.") ? zodToTypeScript(r.inputSource) : r.inputSource)
-          : "Record<string, never>";
+  // Generate input type
+  const inputType = route.inputSource
+    ? (route.inputSource.trim().startsWith("z.") ? zodToTypeScript(route.inputSource) : route.inputSource)
+    : "Record<string, never>";
 
-        // Handlers that don't have typed output (return Response or string directly)
-        if (r.handler === "stream" || r.handler === "html") {
-          return `    export namespace ${pascalRoute} {
+  // Generate type definition
+  let typeDef = "";
+  let methodDef = "";
+
+  if (route.handler === "stream" || route.handler === "html") {
+    typeDef = `    export namespace ${pascalRoute} {
       export type Input = Expand<${inputType}>;
     }
     export type ${pascalRoute} = { Input: ${pascalRoute}.Input };`;
-        }
 
-        // SSE routes - include Events type if eventsSource is present
-        if (r.handler === "sse") {
-          const eventsEntries = r.eventsSource
-            ? Object.entries(r.eventsSource).map(([eventName, eventSchema]) => {
-                const eventType = eventSchema.trim().startsWith("z.")
-                  ? zodToTypeScript(eventSchema)
-                  : eventSchema;
-                return `        "${eventName}": Expand<${eventType}>;`;
-              })
-            : [];
-          const eventsType = eventsEntries.length > 0
-            ? `{\n${eventsEntries.join("\n")}\n      }`
-            : "Record<string, unknown>";
-          return `    export namespace ${pascalRoute} {
+    if (route.handler === "stream") {
+      methodDef = `${camelMethod}: {
+      /** POST request with JSON body (programmatic) */
+      fetch: (input: Routes.${pascalNs}.${pascalRoute}.Input, options?: RequestOptions): Promise<Response> => this.streamRequest("${fullRouteName}", input, options),
+      /** GET URL for browser src attributes (video, img, download links) */
+      url: (input: Routes.${pascalNs}.${pascalRoute}.Input): string => this.streamUrl("${fullRouteName}", input),
+      /** GET request with query params */
+      get: (input: Routes.${pascalNs}.${pascalRoute}.Input, options?: RequestOptions): Promise<Response> => this.streamGet("${fullRouteName}", input, options),
+    }`;
+    } else {
+      const hasInput = route.inputSource;
+      methodDef = `${camelMethod}: (${hasInput ? `input: Routes.${pascalNs}.${pascalRoute}.Input` : ""}): Promise<string> => this.htmlRequest("${fullRouteName}"${hasInput ? ", input" : ""})`;
+    }
+  } else if (route.handler === "sse") {
+    const eventsEntries = route.eventsSource
+      ? Object.entries(route.eventsSource).map(([eventName, eventSchema]) => {
+          const eventType = eventSchema.trim().startsWith("z.")
+            ? zodToTypeScript(eventSchema)
+            : eventSchema;
+          return `        "${eventName}": Expand<${eventType}>;`;
+        })
+      : [];
+    const eventsType = eventsEntries.length > 0
+      ? `{\n${eventsEntries.join("\n")}\n      }`
+      : "Record<string, unknown>";
+
+    typeDef = `    export namespace ${pascalRoute} {
       export type Input = Expand<${inputType}>;
       export type Events = ${eventsType};
     }
     export type ${pascalRoute} = { Input: ${pascalRoute}.Input; Events: ${pascalRoute}.Events };`;
-        }
 
-        // typed and formData have both Input and Output
-        const outputType = r.outputSource
-          ? (r.outputSource.trim().startsWith("z.") ? zodToTypeScript(r.outputSource) : r.outputSource)
-          : "unknown";
-        return `    export namespace ${pascalRoute} {
+    const hasInput = route.inputSource;
+    if (hasInput) {
+      methodDef = `${camelMethod}: (input: Routes.${pascalNs}.${pascalRoute}.Input, options?: SSEConnectionOptions): SSEConnection<Routes.${pascalNs}.${pascalRoute}.Events> => this.sseConnect("${fullRouteName}", input, options)`;
+    } else {
+      methodDef = `${camelMethod}: (options?: SSEConnectionOptions): SSEConnection<Routes.${pascalNs}.${pascalRoute}.Events> => this.sseConnect("${fullRouteName}", undefined, options)`;
+    }
+  } else if (route.handler === "raw") {
+    typeDef = ""; // Raw routes don't have types
+    methodDef = `${camelMethod}: (init?: RequestInit): Promise<Response> => this.rawRequest("${fullRouteName}", init)`;
+  } else if (route.handler === "formData") {
+    const outputType = route.outputSource
+      ? (route.outputSource.trim().startsWith("z.") ? zodToTypeScript(route.outputSource) : route.outputSource)
+      : "unknown";
+
+    typeDef = `    export namespace ${pascalRoute} {
       export type Input = Expand<${inputType}>;
       export type Output = Expand<${outputType}>;
     }
     export type ${pascalRoute} = { Input: ${pascalRoute}.Input; Output: ${pascalRoute}.Output };`;
-      });
 
-    if (typeEntries.length > 0) {
-      typeBlocks.push(`  export namespace ${pascalNs} {\n${typeEntries.join("\n\n")}\n  }`);
+    methodDef = `${camelMethod}: (fields: Routes.${pascalNs}.${pascalRoute}.Input, files: File[]): Promise<Routes.${pascalNs}.${pascalRoute}.Output> => this.formDataRequest("${fullRouteName}", fields, files)`;
+  } else {
+    // typed handler (default)
+    const outputType = route.outputSource
+      ? (route.outputSource.trim().startsWith("z.") ? zodToTypeScript(route.outputSource) : route.outputSource)
+      : "unknown";
+
+    typeDef = `    export namespace ${pascalRoute} {
+      export type Input = Expand<${inputType}>;
+      export type Output = Expand<${outputType}>;
     }
+    export type ${pascalRoute} = { Input: ${pascalRoute}.Input; Output: ${pascalRoute}.Output };`;
 
-    // Generate methods for this namespace
-    const methodEntries = nsRoutes
-      .filter(r => r.handler === "typed")
-      .map(r => {
-        const methodName = toCamelCase(r.routeName);
-        const pascalRoute = toPascalCase(r.routeName);
-        const inputType = `Routes.${pascalNs}.${pascalRoute}.Input`;
-        const outputType = `Routes.${pascalNs}.${pascalRoute}.Output`;
-        // Use original route name with prefix for the request
-        const fullRouteName = commonPrefix ? `${commonPrefix}.${r.name}` : r.name;
-        return `    ${methodName}: (input: ${inputType}, options?: RequestOptions): Promise<${outputType}> => this.request("${fullRouteName}", input, options)`;
-      });
+    methodDef = `${camelMethod}: (input: Routes.${pascalNs}.${pascalRoute}.Input, options?: RequestOptions): Promise<Routes.${pascalNs}.${pascalRoute}.Output> => this.request("${fullRouteName}", input, options)`;
+  }
 
-    const rawMethodEntries = nsRoutes
-      .filter(r => r.handler === "raw")
-      .map(r => {
-        const methodName = toCamelCase(r.routeName);
-        const fullRouteName = commonPrefix ? `${commonPrefix}.${r.name}` : r.name;
-        return `    ${methodName}: (init?: RequestInit): Promise<Response> => this.rawRequest("${fullRouteName}", init)`;
-      });
+  return { methodDef, typeDef };
+}
 
-    const streamMethodEntries = nsRoutes
-      .filter(r => r.handler === "stream")
-      .map(r => {
-        const methodName = toCamelCase(r.routeName);
-        const pascalRoute = toPascalCase(r.routeName);
-        const inputType = `Routes.${pascalNs}.${pascalRoute}.Input`;
-        const fullRouteName = commonPrefix ? `${commonPrefix}.${r.name}` : r.name;
-        // Stream routes provide three methods:
-        // - fetch(input, options?): POST request (programmatic)
-        // - url(input): GET URL for browser (video src, img src, download links)
-        // - get(input, options?): GET fetch request
-        return `    ${methodName}: {
-      /** POST request with JSON body (programmatic) */
-      fetch: (input: ${inputType}, options?: RequestOptions): Promise<Response> => this.streamRequest("${fullRouteName}", input, options),
-      /** GET URL for browser src attributes (video, img, download links) */
-      url: (input: ${inputType}): string => this.streamUrl("${fullRouteName}", input),
-      /** GET request with query params */
-      get: (input: ${inputType}, options?: RequestOptions): Promise<Response> => this.streamGet("${fullRouteName}", input, options),
-    }`;
-      });
+/**
+ * Generate nested object code from a tree node
+ */
+function generateNestedMethods(node: NamespaceTreeNode, indent: string = "    "): string {
+  const parts: string[] = [];
 
-    const sseMethodEntries = nsRoutes
-      .filter(r => r.handler === "sse")
-      .map(r => {
-        const methodName = toCamelCase(r.routeName);
-        const pascalRoute = toPascalCase(r.routeName);
-        const hasInput = r.inputSource;
-        const inputType = hasInput ? `Routes.${pascalNs}.${pascalRoute}.Input` : "Record<string, never>";
-        const eventsType = `Routes.${pascalNs}.${pascalRoute}.Events`;
-        const fullRouteName = commonPrefix ? `${commonPrefix}.${r.name}` : r.name;
-        // SSE returns typed SSEConnection for type-safe event handling
-        // With input: (input, options?) => sseConnect(route, input, options)
-        // Without input: (options?) => sseConnect(route, undefined, options)
-        if (hasInput) {
-          return `    ${methodName}: (input: ${inputType}, options?: SSEConnectionOptions): SSEConnection<${eventsType}> => this.sseConnect("${fullRouteName}", input, options)`;
-        } else {
-          return `    ${methodName}: (options?: SSEConnectionOptions): SSEConnection<${eventsType}> => this.sseConnect("${fullRouteName}", undefined, options)`;
-        }
-      });
+  // Add methods at this level
+  for (const { methodDef } of node.methods) {
+    // Indent each line of the method definition
+    const indented = methodDef.split("\n").map((line, i) =>
+      i === 0 ? `${indent}${line}` : `${indent}${line}`
+    ).join("\n");
+    parts.push(indented);
+  }
 
-    const formDataMethodEntries = nsRoutes
-      .filter(r => r.handler === "formData")
-      .map(r => {
-        const methodName = toCamelCase(r.routeName);
-        const pascalRoute = toPascalCase(r.routeName);
-        const inputType = r.inputSource ? `Routes.${pascalNs}.${pascalRoute}.Input` : "Record<string, any>";
-        const outputType = r.outputSource ? `Routes.${pascalNs}.${pascalRoute}.Output` : "unknown";
-        const fullRouteName = commonPrefix ? `${commonPrefix}.${r.name}` : r.name;
-        return `    ${methodName}: (fields: ${inputType}, files: File[]): Promise<${outputType}> => this.formDataRequest("${fullRouteName}", fields, files)`;
-      });
+  // Add nested namespaces
+  for (const [childName, childNode] of node.children) {
+    const childContent = generateNestedMethods(childNode, indent + "  ");
+    parts.push(`${indent}${childName}: {\n${childContent}\n${indent}}`);
+  }
 
-    const htmlMethodEntries = nsRoutes
-      .filter(r => r.handler === "html")
-      .map(r => {
-        const methodName = toCamelCase(r.routeName);
-        const pascalRoute = toPascalCase(r.routeName);
-        const hasInput = r.inputSource;
-        const inputType = hasInput ? `Routes.${pascalNs}.${pascalRoute}.Input` : "Record<string, never>";
-        const fullRouteName = commonPrefix ? `${commonPrefix}.${r.name}` : r.name;
-        return `    ${methodName}: (${hasInput ? `input: ${inputType}` : ""}): Promise<string> => this.htmlRequest("${fullRouteName}"${hasInput ? ", input" : ""})`;
-      });
+  return parts.join(",\n");
+}
 
-    const allMethods = [...methodEntries, ...rawMethodEntries, ...streamMethodEntries, ...sseMethodEntries, ...formDataMethodEntries, ...htmlMethodEntries];
-    if (allMethods.length > 0) {
-      if (namespace === "_root") {
-        // Root-level methods go directly on the class
-        for (const method of allMethods) {
-          methodBlocks.push(method.replace(/^    /, "  "));
-        }
-      } else {
-        methodBlocks.push(`  ${methodNs} = {\n${allMethods.join(",\n")}\n  };`);
+/**
+ * Collect all type definitions from a tree
+ */
+function collectTypeDefs(tree: Map<string, NamespaceTreeNode>, prefix: string = ""): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+
+  for (const [name, node] of tree) {
+    const nsPath = prefix ? `${prefix}.${name}` : name;
+    const pascalNs = name === "_root" ? "Root" : toPascalCase(nsPath);
+
+    // Collect types from this node's methods
+    const typeDefs = node.methods
+      .map(m => m.typeDef)
+      .filter(t => t.length > 0);
+
+    if (typeDefs.length > 0) {
+      if (!result.has(pascalNs)) {
+        result.set(pascalNs, []);
       }
+      result.get(pascalNs)!.push(...typeDefs);
     }
+
+    // Recursively collect from children
+    const childTypes = collectTypeDefs(node.children, nsPath);
+    for (const [childNs, childDefs] of childTypes) {
+      if (!result.has(childNs)) {
+        result.set(childNs, []);
+      }
+      result.get(childNs)!.push(...childDefs);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Generate a fully-typed SvelteKit-compatible API client
+ */
+function generateTypedSvelteKitClient(routes: RouteInfo[]): string {
+  const opts = svelteKitGeneratorOptions;
+  const commonPrefix = ""; // We don't strip prefixes anymore - nested structure handles it
+
+  // Build nested tree structure from routes
+  const tree = buildRouteTree(routes, commonPrefix);
+
+  // Collect type definitions from tree
+  const typesByNamespace = collectTypeDefs(tree);
+  const typeBlocks: string[] = [];
+  for (const [nsName, typeDefs] of typesByNamespace) {
+    if (typeDefs.length > 0) {
+      typeBlocks.push(`  export namespace ${nsName} {\n${typeDefs.join("\n\n")}\n  }`);
+    }
+  }
+
+  // Generate method blocks from tree
+  const methodBlocks: string[] = [];
+  for (const [topLevel, node] of tree) {
+    if (topLevel === "_root") {
+      // Root level methods become direct class properties
+      for (const { methodDef } of node.methods) {
+        methodBlocks.push(`  ${methodDef};`);
+      }
+      continue;
+    }
+
+    const content = generateNestedMethods(node, "    ");
+    methodBlocks.push(`  ${topLevel} = {\n${content}\n  };`);
   }
 
   return `// Auto-generated by donkeylabs generate
