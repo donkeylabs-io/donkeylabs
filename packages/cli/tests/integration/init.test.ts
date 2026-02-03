@@ -250,6 +250,7 @@ async function validatePackageJson(projectPath: string, config: any) {
   // Check scripts
   expect(pkg.scripts.dev).toBeDefined();
   expect(pkg.scripts.build).toBeDefined();
+  expect(pkg.scripts.update).toBeDefined();
   // SvelteKit uses 'preview', server-only uses 'start'
   if (config.frontend === "sveltekit") {
     expect(pkg.scripts.preview).toBeDefined();

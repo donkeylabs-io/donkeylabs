@@ -374,6 +374,7 @@ function createPackageJson(projectDir: string, options: InitOptions) {
       "prepare": "bun --bun svelte-kit sync && bun run gen:types || echo ''",
       "check": "bun --bun svelte-kit sync && bun --bun svelte-check --tsconfig ./tsconfig.json",
       "gen:types": "donkeylabs generate",
+      "update": "donkeylabs update",
       "cli": "donkeylabs",
       "test": "bun test",
       ...(options.deployment === "docker" && {
@@ -386,6 +387,7 @@ function createPackageJson(projectDir: string, options: InitOptions) {
       "build": "bun build src/server/index.ts --outdir=dist",
       "start": "bun run dist/index.js",
       "gen:types": "bunx donkeylabs generate",
+      "update": "bunx donkeylabs update",
       "test": "bun test",
       "lint": "bun --bun tsc --noEmit",
       ...(options.deployment === "docker" && {
