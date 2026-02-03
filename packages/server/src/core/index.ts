@@ -272,3 +272,25 @@ export {
 
 export { LocalStorageAdapter } from "./storage-adapter-local";
 export { S3StorageAdapter } from "./storage-adapter-s3";
+
+export {
+  type Logs,
+  type LogSource,
+  type PersistentLogEntry,
+  type LogsQueryFilters,
+  type LogsRetentionConfig,
+  type LogsConfig,
+  type LogsAdapter,
+  MemoryLogsAdapter,
+  createLogs,
+} from "./logs";
+
+export {
+  KyselyLogsAdapter,
+  type KyselyLogsAdapterConfig,
+} from "./logs-adapter-kysely";
+
+export {
+  PersistentTransport,
+  type PersistentTransportConfig,
+} from "./logs-transport";

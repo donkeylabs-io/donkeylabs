@@ -16,9 +16,11 @@ import {
   createAudit,
   createWebSocket,
   createStorage,
+  createLogs,
   KyselyJobAdapter,
   KyselyWorkflowAdapter,
   MemoryAuditAdapter,
+  MemoryLogsAdapter,
 } from "./core/index";
 import { AppServer, type ServerConfig } from "./server";
 import type { IRouter, RouteDefinition } from "./router";
@@ -68,6 +70,7 @@ export async function createTestHarness(targetPlugin: Plugin, dependencies: Plug
   const audit = createAudit({ adapter: new MemoryAuditAdapter() });
   const websocket = createWebSocket();
   const storage = createStorage(); // Uses memory adapter by default
+  const logs = createLogs({ adapter: new MemoryLogsAdapter(), events });
 
   const core: CoreServices = {
     db,
@@ -85,6 +88,7 @@ export async function createTestHarness(targetPlugin: Plugin, dependencies: Plug
     audit,
     websocket,
     storage,
+    logs,
   };
 
   const manager = new PluginManager(core);

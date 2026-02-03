@@ -3,6 +3,7 @@
 // Supports both in-process handlers and external processes (Python, Go, Shell, etc.)
 
 import type { Events } from "./events";
+import type { Logger } from "./logger";
 import type {
   ExternalJobConfig,
   ExternalJob,
@@ -58,7 +59,7 @@ export interface Job {
 }
 
 export interface JobHandler<T = any, R = any> {
-  (data: T): Promise<R>;
+  (data: T, ctx?: { logger: Logger }): Promise<R>;
 }
 
 /** Options for listing all jobs */
@@ -94,6 +95,7 @@ export interface JobAdapter {
 export interface JobsConfig {
   adapter?: JobAdapter;
   events?: Events;
+  logger?: Logger;
   concurrency?: number; // Max concurrent jobs, default 5
   pollInterval?: number; // ms, default 1000
   maxAttempts?: number; // Default retry attempts, default 3
@@ -247,6 +249,7 @@ class JobsImpl implements Jobs {
   private adapter: JobAdapter;
   private sqliteAdapter?: SqliteJobAdapter;
   private events?: Events;
+  private logger?: Logger;
   private handlers = new Map<string, JobHandler>();
   private running = false;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -268,6 +271,7 @@ class JobsImpl implements Jobs {
 
   constructor(config: JobsConfig = {}) {
     this.events = config.events;
+    this.logger = config.logger;
     this.concurrency = config.concurrency ?? 5;
     this.pollInterval = config.pollInterval ?? 1000;
     this.defaultMaxAttempts = config.maxAttempts ?? 3;
@@ -1061,7 +1065,9 @@ class JobsImpl implements Jobs {
         attempts: job.attempts + 1,
       });
 
-      const result = await handler(job.data);
+      // Create scoped logger for this job execution
+      const scopedLogger = this.logger?.scoped("job", job.id);
+      const result = await handler(job.data, scopedLogger ? { logger: scopedLogger } : undefined);
 
       await this.adapter.update(job.id, {
         status: "completed",

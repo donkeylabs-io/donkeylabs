@@ -13,6 +13,7 @@ import {
   renderProcessesList,
   renderWorkflowsList,
   renderAuditLogs,
+  renderLogs,
   renderSSEClients,
   renderWebSocketClients,
   renderEvents,
@@ -122,6 +123,14 @@ export function createAdminRouter(config: AdminRouteContext) {
             limit: 100,
           });
           content = renderWorkflowsList(prefix, workflows);
+          break;
+        }
+        case "logs": {
+          const logEntries = await ctx.core.logs.query({
+            source: (status as any) || undefined,
+            limit: 100,
+          });
+          content = renderLogs(prefix, logEntries);
           break;
         }
         case "audit": {
@@ -549,6 +558,59 @@ export function createAdminRouter(config: AdminRouteContext) {
       return ["workflows:all"];
     },
   });
+
+  // Logs list route
+  router.route("logs.list").typed(
+    defineRoute({
+      input: z.object({
+        source: z.enum(["system", "cron", "job", "workflow", "plugin", "route"]).optional(),
+        sourceId: z.string().optional(),
+        level: z.enum(["debug", "info", "warn", "error"]).optional(),
+        search: z.string().optional(),
+        startDate: z.string().optional(),
+        endDate: z.string().optional(),
+        limit: z.number().default(100),
+        offset: z.number().default(0),
+      }),
+      output: z.array(
+        z.object({
+          id: z.string(),
+          timestamp: z.string(),
+          level: z.string(),
+          message: z.string(),
+          source: z.string(),
+          sourceId: z.string().nullable(),
+          tags: z.array(z.string()).nullable(),
+          data: z.any().nullable(),
+        })
+      ),
+      handle: async (input, ctx) => {
+        if (!checkAuth(ctx)) {
+          throw ctx.errors.Forbidden("Unauthorized");
+        }
+        const entries = await ctx.core.logs.query({
+          source: input.source as any,
+          sourceId: input.sourceId,
+          level: input.level as any,
+          search: input.search,
+          startDate: input.startDate ? new Date(input.startDate) : undefined,
+          endDate: input.endDate ? new Date(input.endDate) : undefined,
+          limit: input.limit,
+          offset: input.offset,
+        });
+        return entries.map((entry) => ({
+          id: entry.id,
+          timestamp: entry.timestamp.toISOString(),
+          level: entry.level,
+          message: entry.message,
+          source: entry.source,
+          sourceId: entry.sourceId ?? null,
+          tags: entry.tags ?? null,
+          data: entry.data ?? null,
+        }));
+      },
+    })
+  );
 
   // Audit list route
   router.route("audit.list").typed(

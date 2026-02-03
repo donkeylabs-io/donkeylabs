@@ -19,12 +19,16 @@ import {
   createAudit,
   createWebSocket,
   createStorage,
+  createLogs,
   extractClientIP,
   HttpError,
   KyselyJobAdapter,
   KyselyProcessAdapter,
   KyselyWorkflowAdapter,
   KyselyAuditAdapter,
+  KyselyLogsAdapter,
+  PersistentTransport,
+  ConsoleTransport,
   type LoggerConfig,
   type CacheConfig,
   type EventsConfig,
@@ -38,6 +42,7 @@ import {
   type AuditConfig,
   type WebSocketConfig,
   type StorageConfig,
+  type LogsConfig,
 } from "./core/index";
 import type { AdminConfig } from "./admin";
 import { zodSchemaToTs } from "./generator/zod-to-ts";
@@ -80,6 +85,7 @@ export interface ServerConfig {
   audit?: AuditConfig;
   websocket?: WebSocketConfig;
   storage?: StorageConfig;
+  logs?: LogsConfig;
   /**
    * Admin dashboard configuration.
    * Automatically enabled in dev mode, disabled in production.
@@ -224,23 +230,52 @@ export class AppServer {
     const useLegacy = options.useLegacyCoreDatabases ?? false;
 
     // Initialize core services
-    const logger = createLogger(options.logger);
+    // Order matters: events → logs → logger (with PersistentTransport) → cron/jobs (with logger)
     const cache = createCache(options.cache);
     const events = createEvents(options.events);
-    const cron = createCron(options.cron);
     const sse = createSSE(options.sse);
     const rateLimiter = createRateLimiter(options.rateLimiter);
     const errors = createErrors(options.errors);
+
+    // Create logs service with its own database
+    const logsAdapter = options.logs?.adapter ?? new KyselyLogsAdapter({
+      dbPath: options.logs?.dbPath,
+    });
+    const logs = createLogs({
+      ...options.logs,
+      adapter: logsAdapter,
+      events,
+    });
+
+    // Create logger with both console and persistent transports
+    const persistentTransport = new PersistentTransport(logs, {
+      minLevel: options.logs?.minLevel,
+    });
+    const loggerTransports = [
+      new ConsoleTransport(options.logger?.format ?? "pretty"),
+      persistentTransport,
+    ];
+    const logger = createLogger({
+      ...options.logger,
+      transports: options.logger?.transports ?? loggerTransports,
+    });
+
+    // Cron with logger for scoped logging
+    const cron = createCron({
+      ...options.cron,
+      logger,
+    });
 
     // Create adapters - use Kysely by default, or legacy SQLite if requested
     const jobAdapter = options.jobs?.adapter ?? (useLegacy ? undefined : new KyselyJobAdapter(options.db));
     const workflowAdapter = options.workflows?.adapter ?? (useLegacy ? undefined : new KyselyWorkflowAdapter(options.db));
     const auditAdapter = options.audit?.adapter ?? new KyselyAuditAdapter(options.db);
 
-    // Jobs can emit events and use Kysely adapter
+    // Jobs can emit events and use Kysely adapter, with logger for scoped logging
     const jobs = createJobs({
       ...options.jobs,
       events,
+      logger,
       adapter: jobAdapter,
       // Disable built-in persistence when using Kysely adapter
       persist: useLegacy ? options.jobs?.persist : false,
@@ -256,8 +291,6 @@ export class AppServer {
     });
 
     // Processes - still uses its own adapter pattern but can use Kysely
-    // Note: ProcessesImpl creates its own SqliteProcessAdapter internally
-    // For full Kysely support, we need to modify processes.ts
     const processes = createProcesses({
       ...options.processes,
       events,
@@ -287,6 +320,7 @@ export class AppServer {
       audit,
       websocket,
       storage,
+      logs,
     };
 
     // Resolve circular dependency: workflows needs core for step handlers
@@ -993,6 +1027,7 @@ ${factoryFunction}
 
     this.coreServices.cron.start();
     this.coreServices.jobs.start();
+    await this.coreServices.workflows.resolveDbPath();
     await this.coreServices.workflows.resume();
     this.coreServices.processes.start();
     logger.info("Background services started (cron, jobs, workflows, processes)");
@@ -1406,6 +1441,10 @@ ${factoryFunction}
 
     // Run user shutdown handlers first (in reverse order - LIFO)
     await this.runShutdownHandlers();
+
+    // Flush and stop logs before other services shut down
+    await this.coreServices.logs.flush();
+    this.coreServices.logs.stop();
 
     // Stop SSE (closes all client connections)
     this.coreServices.sse.shutdown();

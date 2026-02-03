@@ -18,6 +18,7 @@ const icons = {
   cache: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/></svg>`,
   plugins: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z"/></svg>`,
   routes: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>`,
+  logs: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h16M4 18h16"/></svg>`,
   refresh: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>`,
   server: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/></svg>`,
 };
@@ -72,6 +73,7 @@ export function renderDashboardLayout(
     { id: "processes", label: "Processes", icon: icons.processes },
     { id: "workflows", label: "Workflows", icon: icons.workflows },
     { id: "audit", label: "Audit Logs", icon: icons.audit },
+    { id: "logs", label: "Logs", icon: icons.logs },
     { id: "sse", label: "SSE Clients", icon: icons.sse },
     { id: "websocket", label: "WebSocket", icon: icons.websocket },
     { id: "events", label: "Events", icon: icons.events },
@@ -120,7 +122,7 @@ export function renderDashboardLayout(
       <nav class="nav-section">
         <div class="nav-section-title">Core Services</div>
         ${navItems
-          .slice(1, 5)
+          .slice(1, 6)
           .map(
             (item) => `
           <a href="/${prefix}.dashboard?view=${item.id}"
@@ -138,7 +140,7 @@ export function renderDashboardLayout(
       <nav class="nav-section">
         <div class="nav-section-title">Connections</div>
         ${navItems
-          .slice(5, 8)
+          .slice(6, 9)
           .map(
             (item) => `
           <a href="/${prefix}.dashboard?view=${item.id}"
@@ -156,7 +158,7 @@ export function renderDashboardLayout(
       <nav class="nav-section">
         <div class="nav-section-title">Configuration</div>
         ${navItems
-          .slice(8)
+          .slice(9)
           .map(
             (item) => `
           <a href="/${prefix}.dashboard?view=${item.id}"
@@ -663,6 +665,75 @@ export function renderPlugins(prefix: string, plugins: any[]): string {
                 <td><strong>${plugin.name}</strong></td>
                 <td>${plugin.dependencies?.join(", ") || "-"}</td>
                 <td>${plugin.hasSchema ? "Yes" : "No"}</td>
+              </tr>
+            `
+                    )
+                    .join("")
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+export function renderLogs(prefix: string, logs: any[]): string {
+  const levelBadgeClass = (level: string) => {
+    switch (level) {
+      case "error": return "badge-failed";
+      case "warn": return "badge-pending";
+      case "info": return "badge-running";
+      case "debug": return "badge-completed";
+      default: return "";
+    }
+  };
+
+  return `
+    <div class="page-header">
+      <h2 class="page-title">Logs</h2>
+      <button class="btn" hx-get="/${prefix}.dashboard?view=logs&partial=1" hx-target="#main-content">
+        ${icons.refresh}
+        Refresh
+      </button>
+    </div>
+
+    <div class="filters">
+      <select class="filter-select" hx-get="/${prefix}.dashboard?view=logs&partial=1" hx-target="#main-content" hx-include="this" name="status">
+        <option value="">All Sources</option>
+        <option value="system">System</option>
+        <option value="cron">Cron</option>
+        <option value="job">Job</option>
+        <option value="workflow">Workflow</option>
+        <option value="plugin">Plugin</option>
+        <option value="route">Route</option>
+      </select>
+    </div>
+
+    <div class="card">
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Level</th>
+              <th>Source</th>
+              <th>Source ID</th>
+              <th>Message</th>
+              <th>Timestamp</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              logs.length === 0
+                ? '<tr><td colspan="5" class="empty-state">No log entries found</td></tr>'
+                : logs
+                    .map(
+                      (log: any) => `
+              <tr>
+                <td><span class="badge ${levelBadgeClass(log.level)}">${log.level}</span></td>
+                <td>${log.source}</td>
+                <td class="mono truncate" title="${log.sourceId ?? ""}">${log.sourceId ?? "-"}</td>
+                <td class="truncate" title="${log.message}">${log.message.slice(0, 80)}${log.message.length > 80 ? "..." : ""}</td>
+                <td class="relative-time">${formatRelativeTime(log.timestamp)}</td>
               </tr>
             `
                     )

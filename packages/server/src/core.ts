@@ -16,6 +16,7 @@ import type { Processes } from "./core/processes";
 import type { Audit } from "./core/audit";
 import type { WebSocketService } from "./core/websocket";
 import type { Storage } from "./core/storage";
+import type { Logs } from "./core/logs";
 
 export interface PluginRegistry {}
 
@@ -109,6 +110,7 @@ export interface CoreServices {
   audit: Audit;
   websocket: WebSocketService;
   storage: Storage;
+  logs: Logs;
 }
 
 /**

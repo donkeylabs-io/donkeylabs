@@ -1,11 +1,13 @@
 // Core Cron Service
 // Schedule recurring tasks with cron expressions
 
+import type { Logger } from "./logger";
+
 export interface CronTask {
   id: string;
   name: string;
   expression: string;
-  handler: () => void | Promise<void>;
+  handler: (logger?: Logger) => void | Promise<void>;
   enabled: boolean;
   lastRun?: Date;
   nextRun?: Date;
@@ -13,12 +15,13 @@ export interface CronTask {
 
 export interface CronConfig {
   timezone?: string; // For future use
+  logger?: Logger;
 }
 
 export interface Cron {
   schedule(
     expression: string,
-    handler: () => void | Promise<void>,
+    handler: (logger?: Logger) => void | Promise<void>,
     options?: { name?: string; enabled?: boolean }
   ): string;
   unschedule(taskId: string): boolean;
@@ -259,14 +262,15 @@ class CronImpl implements Cron {
   private running = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private taskCounter = 0;
+  private logger?: Logger;
 
-  constructor(_config: CronConfig = {}) {
-    // timezone handling for future use
+  constructor(config: CronConfig = {}) {
+    this.logger = config.logger;
   }
 
   schedule(
     expression: string,
-    handler: () => void | Promise<void>,
+    handler: (logger?: Logger) => void | Promise<void>,
     options: { name?: string; enabled?: boolean } = {}
   ): string {
     const id = `cron_${++this.taskCounter}_${Date.now()}`;
@@ -336,7 +340,8 @@ class CronImpl implements Cron {
     if (!task) throw new Error(`Task ${taskId} not found`);
 
     task.lastRun = new Date();
-    await task.handler();
+    const scopedLogger = this.logger?.scoped("cron", task.name);
+    await task.handler(scopedLogger);
   }
 
   start(): void {
@@ -358,8 +363,9 @@ class CronImpl implements Cron {
           task.lastRun = now;
           task.nextRun = cronExpr.getNextRun(now);
 
-          // Execute handler (fire and forget, but log errors)
-          Promise.resolve(task.handler()).catch(err => {
+          // Execute handler with scoped logger (fire and forget, but log errors)
+          const scopedLogger = this.logger?.scoped("cron", task.name);
+          Promise.resolve(task.handler(scopedLogger)).catch(err => {
             console.error(`[Cron] Task "${task.name}" failed:`, err);
           });
         }
@@ -388,8 +394,9 @@ class CronImpl implements Cron {
         while (missedRun && missedRun < now && catchUpCount < maxCatchUp) {
           console.log(`[Cron] Catching up missed run for "${task.name}" at ${missedRun.toISOString()}`);
 
-          // Execute the handler asynchronously
-          Promise.resolve(task.handler()).catch(err => {
+          // Execute the handler asynchronously with scoped logger
+          const scopedLogger = this.logger?.scoped("cron", task.name);
+          Promise.resolve(task.handler(scopedLogger)).catch(err => {
             console.error(`[Cron] Catch-up task "${task.name}" failed:`, err);
           });
 

@@ -32,6 +32,8 @@ export interface Logger {
   child(context: Record<string, any>): Logger;
   /** Create a tagged child logger with colored prefix */
   tag(name: string): Logger;
+  /** Create a scoped child logger with source attribution for persistent logging */
+  scoped(source: string, sourceId: string): Logger;
 }
 
 const LOG_LEVELS: Record<LogLevel, number> = {
@@ -54,6 +56,14 @@ const TAG_COLORS: ((s: string) => string)[] = [
 // Cache for consistent tag colors across the app
 const tagColorCache = new Map<string, (s: string) => string>();
 let colorIndex = 0;
+
+// Pre-seed fixed colors for source types
+tagColorCache.set("cron", pc.yellow);
+tagColorCache.set("job", pc.magenta);
+tagColorCache.set("workflow", pc.cyan);
+tagColorCache.set("plugin", pc.green);
+tagColorCache.set("system", pc.blue);
+tagColorCache.set("route", pc.red);
 
 /**
  * Get a consistent color for a tag name.
@@ -186,6 +196,10 @@ class LoggerImpl implements Logger {
       { ...this.context },
       [...this.tags, name]
     );
+  }
+
+  scoped(source: string, sourceId: string): Logger {
+    return this.tag(source).child({ logSource: source, logSourceId: sourceId });
   }
 }
 

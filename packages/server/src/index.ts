@@ -99,6 +99,16 @@ export {
   type ErrorFactories,
 } from "./core/index";
 
+// Logs (persistent logging)
+export {
+  type Logs,
+  type LogSource,
+  type PersistentLogEntry,
+  type LogsQueryFilters,
+  type LogsConfig,
+  type LogsRetentionConfig,
+} from "./core/logs";
+
 // Workflows (step functions)
 export {
   workflow,
