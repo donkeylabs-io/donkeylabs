@@ -43,7 +43,7 @@
     "src",
     "docs",
     "examples",
-    "CLAUDE.md",
+    "agents.md",
     "context.d.ts",
     "registry.d.ts",
     "LICENSE",
