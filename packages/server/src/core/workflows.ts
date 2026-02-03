@@ -195,6 +195,8 @@ export interface WorkflowContext {
   getStepResult<T = any>(stepName: string): T | undefined;
   /** Core services (logger, events, cache, etc.) */
   core: CoreServices;
+  /** Plugin services - available for business logic in workflow handlers */
+  plugins: Record<string, any>;
 }
 
 // ============================================
@@ -558,6 +560,8 @@ export interface Workflows {
   stop(): Promise<void>;
   /** Set core services (called after initialization to resolve circular dependency) */
   setCore(core: CoreServices): void;
+  /** Set plugin services (called after plugins are initialized) */
+  setPlugins(plugins: Record<string, any>): void;
 }
 
 // ============================================
@@ -570,6 +574,7 @@ class WorkflowsImpl implements Workflows {
   private jobs?: Jobs;
   private sse?: SSE;
   private core?: CoreServices;
+  private plugins: Record<string, any> = {};
   private definitions = new Map<string, WorkflowDefinition>();
   private running = new Map<string, { timeout?: ReturnType<typeof setTimeout> }>();
   private pollInterval: number;
@@ -585,6 +590,10 @@ class WorkflowsImpl implements Workflows {
 
   setCore(core: CoreServices): void {
     this.core = core;
+  }
+
+  setPlugins(plugins: Record<string, any>): void {
+    this.plugins = plugins;
   }
 
   register(definition: WorkflowDefinition): void {
@@ -1150,6 +1159,7 @@ class WorkflowsImpl implements Workflows {
         return steps[stepName] as T | undefined;
       },
       core: this.core!,
+      plugins: this.plugins,
     };
   }
 

@@ -109,21 +109,109 @@ class CronExpression {
     );
   }
 
+  /**
+   * Get the next run time using an optimized jump algorithm.
+   * Instead of iterating second-by-second (which could be 31M iterations),
+   * this jumps directly to the next valid value for each field.
+   */
   getNextRun(from: Date = new Date()): Date {
     const next = new Date(from);
     next.setMilliseconds(0);
     next.setSeconds(next.getSeconds() + 1);
 
-    // Search up to 1 year ahead
-    const maxIterations = 366 * 24 * 60 * 60;
-    for (let i = 0; i < maxIterations; i++) {
-      if (this.matches(next)) {
-        return next;
+    const [seconds, minutes, hours, daysOfMonth, months, daysOfWeek] = this.fields;
+
+    // Maximum iterations to prevent infinite loops (covers 4 years to handle leap years)
+    const maxYearIterations = 4;
+    const startYear = next.getFullYear();
+
+    // Iterate through potential dates (worst case: a few hundred iterations)
+    for (let yearOffset = 0; yearOffset <= maxYearIterations; yearOffset++) {
+      // Try each valid month
+      for (const month of months) {
+        const targetMonth = month - 1; // JS months are 0-indexed
+
+        // Skip months in the past
+        if (next.getFullYear() === startYear + yearOffset) {
+          if (targetMonth < next.getMonth()) continue;
+        }
+
+        // Set to this month
+        if (targetMonth !== next.getMonth() || next.getFullYear() !== startYear + yearOffset) {
+          next.setFullYear(startYear + yearOffset, targetMonth, 1);
+          next.setHours(0, 0, 0, 0);
+        }
+
+        // Get days in this month
+        const daysInMonth = new Date(next.getFullYear(), targetMonth + 1, 0).getDate();
+
+        // Try each valid day of month
+        for (const dayOfMonth of daysOfMonth) {
+          if (dayOfMonth > daysInMonth) continue; // Skip invalid days for this month
+
+          // Check if this day matches day-of-week constraint
+          const testDate = new Date(next.getFullYear(), targetMonth, dayOfMonth);
+          const dayOfWeek = testDate.getDay();
+          if (!daysOfWeek.includes(dayOfWeek)) continue;
+
+          // Skip days in the past
+          if (testDate < new Date(from.getFullYear(), from.getMonth(), from.getDate())) continue;
+
+          // Set to this day
+          if (dayOfMonth !== next.getDate()) {
+            next.setDate(dayOfMonth);
+            next.setHours(0, 0, 0, 0);
+          }
+
+          // Try each valid hour
+          for (const hour of hours) {
+            // Skip hours in the past for today
+            if (next.getFullYear() === from.getFullYear() &&
+                next.getMonth() === from.getMonth() &&
+                next.getDate() === from.getDate() &&
+                hour < from.getHours()) continue;
+
+            if (hour !== next.getHours()) {
+              next.setHours(hour, 0, 0, 0);
+            }
+
+            // Try each valid minute
+            for (const minute of minutes) {
+              // Skip minutes in the past for this hour
+              if (next.getFullYear() === from.getFullYear() &&
+                  next.getMonth() === from.getMonth() &&
+                  next.getDate() === from.getDate() &&
+                  next.getHours() === from.getHours() &&
+                  minute < from.getMinutes()) continue;
+
+              if (minute !== next.getMinutes()) {
+                next.setMinutes(minute, 0, 0);
+              }
+
+              // Try each valid second
+              for (const second of seconds) {
+                // Skip seconds in the past for this minute
+                if (next.getFullYear() === from.getFullYear() &&
+                    next.getMonth() === from.getMonth() &&
+                    next.getDate() === from.getDate() &&
+                    next.getHours() === from.getHours() &&
+                    next.getMinutes() === from.getMinutes() &&
+                    second <= from.getSeconds()) continue;
+
+                next.setSeconds(second);
+
+                // Verify the date is still valid (handles edge cases like month rollover)
+                if (next > from && this.matches(next)) {
+                  return next;
+                }
+              }
+            }
+          }
+        }
       }
-      next.setSeconds(next.getSeconds() + 1);
     }
 
-    throw new Error("Could not find next run time within 1 year");
+    throw new Error("Could not find next run time within 4 years");
   }
 }
 

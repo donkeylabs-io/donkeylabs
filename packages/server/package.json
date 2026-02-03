@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/server",
-  "version": "2.0.18",
+  "version": "2.0.19",
   "type": "module",
   "description": "Type-safe plugin system for building RPC-style APIs with Bun",
   "main": "./src/index.ts",
@@ -29,6 +29,10 @@
     "./process-client": {
       "types": "./src/process-client.ts",
       "import": "./src/process-client.ts"
+    },
+    "./testing": {
+      "types": "./src/testing/index.ts",
+      "import": "./src/testing/index.ts"
     },
     "./context": {
       "types": "./context.d.ts"
@@ -68,13 +72,25 @@
     "kysely": "^0.27.0 || ^0.28.0",
     "zod": "^3.20.0",
     "@aws-sdk/client-s3": "^3.0.0",
-    "@aws-sdk/s3-request-presigner": "^3.0.0"
+    "@aws-sdk/s3-request-presigner": "^3.0.0",
+    "@playwright/test": "^1.40.0",
+    "pg": "^8.0.0",
+    "mysql2": "^3.0.0"
   },
   "peerDependenciesMeta": {
     "@aws-sdk/client-s3": {
       "optional": true
     },
     "@aws-sdk/s3-request-presigner": {
+      "optional": true
+    },
+    "@playwright/test": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    },
+    "mysql2": {
       "optional": true
     }
   },

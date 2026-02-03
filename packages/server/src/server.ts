@@ -205,6 +205,8 @@ export class AppServer {
   private shutdownHandlers: OnShutdownHandler[] = [];
   private errorHandlers: OnErrorHandler[] = [];
   private isShuttingDown = false;
+  private isInitialized = false;
+  private initializationPromise: Promise<void> | null = null;
   private generateModeSetup = false;
 
   // Custom services registry
@@ -955,6 +957,27 @@ ${factoryFunction}
       process.exit(0);
     }
 
+    // Guard against multiple initializations using promise-based mutex
+    // This prevents race conditions when multiple requests arrive concurrently
+    if (this.isInitialized) {
+      this.coreServices.logger.debug("Server already initialized, skipping");
+      return;
+    }
+    if (this.initializationPromise) {
+      this.coreServices.logger.debug("Server initialization in progress, waiting...");
+      await this.initializationPromise;
+      return;
+    }
+
+    // Create the initialization promise - all concurrent callers will await this same promise
+    this.initializationPromise = this.doInitialize();
+    await this.initializationPromise;
+  }
+
+  /**
+   * Internal initialization logic - only called once via the promise mutex
+   */
+  private async doInitialize(): Promise<void> {
     const { logger } = this.coreServices;
 
     // Auto-generate types in dev mode if configured
@@ -962,6 +985,11 @@ ${factoryFunction}
 
     await this.manager.migrate();
     await this.manager.init();
+
+    // Pass plugins to workflows so handlers can access ctx.plugins
+    this.coreServices.workflows.setPlugins(this.manager.getServices());
+
+    this.isInitialized = true;
 
     this.coreServices.cron.start();
     this.coreServices.jobs.start();
@@ -1185,34 +1213,20 @@ ${factoryFunction}
       process.exit(0);
     }
 
-    const { logger } = this.coreServices;
-
-    // Auto-generate types in dev mode if configured
-    await this.generateTypes();
-
-    // 1. Run migrations
-    await this.manager.migrate();
-
-    // 2. Initialize plugins
-    await this.manager.init();
-
-    // 3. Start background services
-    this.coreServices.cron.start();
-    this.coreServices.jobs.start();
-    await this.coreServices.workflows.resume();
-    this.coreServices.processes.start();
-    logger.info("Background services started (cron, jobs, workflows, processes)");
-
-    // 4. Build route map
-    for (const router of this.routers) {
-      for (const route of router.getRoutes()) {
-        if (this.routeMap.has(route.name)) {
-          logger.warn(`Duplicate route detected`, { route: route.name });
-        }
-        this.routeMap.set(route.name, route);
+    // Guard against multiple initializations using promise-based mutex
+    // This prevents race conditions when multiple requests arrive concurrently
+    if (!this.isInitialized) {
+      if (this.initializationPromise) {
+        this.coreServices.logger.debug("Server initialization in progress, waiting...");
+        await this.initializationPromise;
+      } else {
+        // Create the initialization promise - all concurrent callers will await this same promise
+        this.initializationPromise = this.doInitialize();
+        await this.initializationPromise;
       }
     }
-    logger.info(`Loaded ${this.routeMap.size} RPC routes`);
+
+    const { logger } = this.coreServices;
 
     // 5. Start HTTP server with port retry logic
     const fetchHandler = async (req: Request, server: ReturnType<typeof Bun.serve>) => {

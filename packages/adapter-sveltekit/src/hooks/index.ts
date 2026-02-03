@@ -2,7 +2,7 @@
  * SvelteKit hooks helper for @donkeylabs/adapter-sveltekit
  */
 
-import type { Handle } from "@sveltejs/kit";
+import type { Handle, RequestEvent } from "@sveltejs/kit";
 
 // Try to import dev server reference (only available in dev mode)
 let getDevServer: (() => any) | undefined;
@@ -12,6 +12,19 @@ try {
   getDevServer = viteModule.getDevServer;
 } catch {
   // Not in dev mode or vite not available
+}
+
+/**
+ * Safely get client IP address with fallback.
+ * SvelteKit's getClientAddress() throws when running with Bun or without proper proxy headers.
+ */
+function safeGetClientAddress(event: RequestEvent): string {
+  try {
+    return safeGetClientAddress(event);
+  } catch {
+    // Fallback when address cannot be determined (e.g., Bun runtime, SSR without client)
+    return "127.0.0.1";
+  }
 }
 
 export interface DonkeylabsPlatform {
@@ -72,7 +85,7 @@ export function createHandle(): Handle {
         sse: core.sse,
       };
       (event.locals as DonkeylabsLocals).db = core.db;
-      (event.locals as DonkeylabsLocals).ip = event.getClientAddress();
+      (event.locals as DonkeylabsLocals).ip = safeGetClientAddress(event);
       // Expose the direct route handler for SSR API calls
       (event.locals as DonkeylabsLocals).handleRoute = handleRoute;
     } else if (getDevServer) {
@@ -90,10 +103,10 @@ export function createHandle(): Handle {
           sse: core.sse,
         };
         (event.locals as DonkeylabsLocals).db = core.db;
-        (event.locals as DonkeylabsLocals).ip = event.getClientAddress();
+        (event.locals as DonkeylabsLocals).ip = safeGetClientAddress(event);
         // Direct route handler for SSR
         (event.locals as DonkeylabsLocals).handleRoute = async (routeName: string, input: any) => {
-          return devServer.callRoute(routeName, input, event.getClientAddress());
+          return devServer.callRoute(routeName, input, safeGetClientAddress(event));
         };
       }
     }
