@@ -79,8 +79,10 @@ const orderWorkflow = workflow("process-order")
 ### 2. Register and Start
 
 ```typescript
-// Register the workflow
-ctx.core.workflows.register(orderWorkflow);
+// Register the workflow (modulePath required for isolated/subprocess execution)
+ctx.core.workflows.register(orderWorkflow, {
+  modulePath: import.meta.url,
+});
 
 // Start an instance
 const instanceId = await ctx.core.workflows.start("process-order", {
@@ -462,6 +464,62 @@ for (const event of workflowEvents) {
 }
 ```
 
+## Execution Modes
+
+Workflows support two execution modes controlled by the `.isolated()` builder method:
+
+### Isolated Mode (Default)
+
+By default, workflows run in a **separate subprocess**. This prevents long-running step handlers from blocking the main server's event loop. The subprocess owns its own database connection and state machine, communicating events back to the main server via Unix sockets (TCP on Windows).
+
+```typescript
+// Isolated mode (default) - runs in subprocess
+const myWorkflow = workflow("heavy-processing")
+  .task("compute", {
+    handler: async (input, ctx) => {
+      // CPU-intensive work runs in subprocess, won't block the server
+      return await heavyComputation(input);
+    },
+  })
+  .build();
+
+// Must provide modulePath so the subprocess can import the workflow definition
+ctx.core.workflows.register(myWorkflow, {
+  modulePath: import.meta.url,
+});
+```
+
+The `modulePath` option is **required** for isolated workflows. It tells the subprocess where to find the workflow definition module.
+
+### Inline Mode
+
+For lightweight workflows that complete quickly, you can opt into inline execution:
+
+```typescript
+const quickWorkflow = workflow("quick-validation")
+  .isolated(false) // Run in the main server process
+  .task("validate", {
+    handler: async (input, ctx) => {
+      return { valid: true };
+    },
+    end: true,
+  })
+  .build();
+
+// No modulePath needed for inline workflows
+ctx.core.workflows.register(quickWorkflow);
+```
+
+### Choosing a Mode
+
+| | Isolated (default) | Inline |
+|---|---|---|
+| Step types | All (task, choice, parallel, pass) | All (task, choice, parallel, pass) |
+| Event loop | Separate process, won't block server | Runs on main thread |
+| Plugin access | Via IPC proxy | Direct access |
+| Best for | Long-running, CPU-intensive workflows | Quick validations, lightweight flows |
+| Requires | `modulePath` at registration | Nothing extra |
+
 ## API Reference
 
 ### Workflows Service
@@ -469,7 +527,7 @@ for (const event of workflowEvents) {
 ```typescript
 interface Workflows {
   /** Register a workflow definition */
-  register(definition: WorkflowDefinition): void;
+  register(definition: WorkflowDefinition, options?: WorkflowRegisterOptions): void;
 
   /** Start a new workflow instance */
   start<T = any>(workflowName: string, input: T): Promise<string>;
@@ -486,8 +544,20 @@ interface Workflows {
   /** Resume workflows after server restart */
   resume(): Promise<void>;
 
+  /** Update metadata for a workflow instance */
+  updateMetadata(instanceId: string, metadata: Record<string, any>): Promise<void>;
+
   /** Stop the workflow service */
   stop(): Promise<void>;
+}
+
+interface WorkflowRegisterOptions {
+  /**
+   * Module path for isolated workflows.
+   * Required when the workflow runs in isolated mode (the default).
+   * Typically: import.meta.url
+   */
+  modulePath?: string;
 }
 ```
 
@@ -576,13 +646,14 @@ const server = new AppServer({
 Workflows automatically resume after server restart:
 
 1. On startup, `workflows.resume()` is called
-2. All instances with `status: "running"` are retrieved
-3. Execution continues from the current step
+2. All instances with `status: "running"` are retrieved from the database
+3. Isolated workflows re-launch a new subprocess that continues from the current step
+4. Inline workflows re-create the state machine and continue from the current step
 
 For this to work properly:
 - Use a persistent adapter (not in-memory) in production
-- Jobs should be idempotent when possible
-- The Jobs service must also support restart resilience
+- Step handlers should be idempotent when possible (a step may re-execute after a crash)
+- For isolated workflows, ensure `modulePath` was provided at registration
 
 ## Complete Example
 
@@ -670,8 +741,10 @@ const onboardingWorkflow = workflow("user-onboarding")
 // Setup server
 const server = new AppServer({ db: createDatabase() });
 
-// Register workflow
-server.getCore().workflows.register(onboardingWorkflow);
+// Register workflow (modulePath required for isolated execution)
+server.getCore().workflows.register(onboardingWorkflow, {
+  modulePath: import.meta.url,
+});
 
 // Start workflow from a route
 router.route("onboard").typed({
