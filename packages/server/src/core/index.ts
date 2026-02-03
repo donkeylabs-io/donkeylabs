@@ -218,6 +218,12 @@ export {
 } from "./process-socket";
 
 export {
+  WorkflowStateMachine,
+  type StateMachineEvents,
+  type StateMachineConfig,
+} from "./workflow-state-machine";
+
+export {
   KyselyWorkflowAdapter,
   type KyselyWorkflowAdapterConfig,
 } from "./workflow-adapter-kysely";

@@ -26,6 +26,8 @@ export interface WorkflowEvent {
   instanceId: string;
   timestamp: number;
   stepName?: string;
+  /** Step type (for step.started events) */
+  stepType?: string;
   output?: any;
   error?: string;
   progress?: number;

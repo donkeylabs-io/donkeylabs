@@ -413,3 +413,346 @@ describe("WorkflowDefinition", () => {
     expect(inlineWf.isolated).toBe(false);
   });
 });
+
+describe("Choice steps (inline)", () => {
+  let workflows: ReturnType<typeof createWorkflows>;
+  let adapter: MemoryWorkflowAdapter;
+
+  beforeEach(() => {
+    adapter = new MemoryWorkflowAdapter();
+    workflows = createWorkflows({ adapter });
+  });
+
+  afterEach(async () => {
+    await workflows.stop();
+  });
+
+  it("should register workflow with choice step (no restriction)", () => {
+    const wf = workflow("with-choice")
+      .isolated(false)
+      .task("start", { handler: async () => ({ type: "express" }) })
+      .choice("route", {
+        choices: [
+          { condition: (ctx) => ctx.prev?.type === "express", next: "fast-path" },
+          { condition: (ctx) => ctx.prev?.type === "standard", next: "slow-path" },
+        ],
+        default: "slow-path",
+      })
+      .task("fast-path", { handler: async () => ({ speed: "fast" }), end: true })
+      .task("slow-path", { handler: async () => ({ speed: "slow" }), end: true })
+      .build();
+
+    // Should not throw - choice is allowed now
+    expect(() => workflows.register(wf)).not.toThrow();
+  });
+
+  it("should execute choice step and follow matching branch", async () => {
+    const wf = workflow("choice-test")
+      .isolated(false)
+      .task("start", { handler: async () => ({ type: "express" }) })
+      .choice("route", {
+        choices: [
+          { condition: (ctx) => ctx.prev?.type === "express", next: "fast-path" },
+        ],
+        default: "slow-path",
+      })
+      .task("fast-path", { handler: async () => ({ speed: "fast" }), end: true })
+      .task("slow-path", { handler: async () => ({ speed: "slow" }), end: true })
+      .build();
+
+    workflows.register(wf);
+    const instanceId = await workflows.start("choice-test", {});
+
+    await new Promise((r) => setTimeout(r, 200));
+
+    const instance = await workflows.getInstance(instanceId);
+    expect(instance?.status).toBe("completed");
+    expect(instance?.output).toEqual({ speed: "fast" });
+  });
+
+  it("should use default when no choice matches", async () => {
+    const wf = workflow("choice-default")
+      .isolated(false)
+      .task("start", { handler: async () => ({ type: "unknown" }) })
+      .choice("route", {
+        choices: [
+          { condition: (ctx) => ctx.prev?.type === "express", next: "fast-path" },
+        ],
+        default: "slow-path",
+      })
+      .task("fast-path", { handler: async () => ({ speed: "fast" }), end: true })
+      .task("slow-path", { handler: async () => ({ speed: "slow" }), end: true })
+      .build();
+
+    workflows.register(wf);
+    const instanceId = await workflows.start("choice-default", {});
+
+    await new Promise((r) => setTimeout(r, 200));
+
+    const instance = await workflows.getInstance(instanceId);
+    expect(instance?.status).toBe("completed");
+    expect(instance?.output).toEqual({ speed: "slow" });
+  });
+
+  it("should fail when no choice matches and no default", async () => {
+    const wf = workflow("choice-no-default")
+      .isolated(false)
+      .task("start", { handler: async () => ({ type: "unknown" }) })
+      .choice("route", {
+        choices: [
+          { condition: (ctx) => ctx.prev?.type === "express", next: "fast-path" },
+        ],
+      })
+      .task("fast-path", { handler: async () => ({ speed: "fast" }), end: true })
+      .build();
+
+    workflows.register(wf);
+    const instanceId = await workflows.start("choice-no-default", {});
+
+    await new Promise((r) => setTimeout(r, 200));
+
+    const instance = await workflows.getInstance(instanceId);
+    expect(instance?.status).toBe("failed");
+    expect(instance?.error).toContain("No choice condition matched");
+  });
+});
+
+describe("Parallel steps (inline)", () => {
+  let workflows: ReturnType<typeof createWorkflows>;
+  let adapter: MemoryWorkflowAdapter;
+
+  beforeEach(() => {
+    adapter = new MemoryWorkflowAdapter();
+    workflows = createWorkflows({ adapter });
+  });
+
+  afterEach(async () => {
+    await workflows.stop();
+  });
+
+  it("should register workflow with parallel step (no restriction)", () => {
+    const branch1 = workflow.branch("branch-a")
+      .task("a1", { handler: async () => ({ branch: "a" }) })
+      .build();
+
+    const branch2 = workflow.branch("branch-b")
+      .task("b1", { handler: async () => ({ branch: "b" }) })
+      .build();
+
+    const wf = workflow("with-parallel")
+      .isolated(false)
+      .parallel("fan-out", { branches: [branch1, branch2] })
+      .build();
+
+    expect(() => workflows.register(wf)).not.toThrow();
+  });
+
+  it("should execute parallel branches and aggregate results", async () => {
+    const branch1 = workflow.branch("branch-a")
+      .task("a1", { handler: async () => ({ result: "a" }) })
+      .build();
+
+    const branch2 = workflow.branch("branch-b")
+      .task("b1", { handler: async () => ({ result: "b" }) })
+      .build();
+
+    const wf = workflow("parallel-test")
+      .isolated(false)
+      .parallel("fan-out", { branches: [branch1, branch2] })
+      .build();
+
+    workflows.register(wf);
+    const instanceId = await workflows.start("parallel-test", {});
+
+    await new Promise((r) => setTimeout(r, 300));
+
+    const instance = await workflows.getInstance(instanceId);
+    expect(instance?.status).toBe("completed");
+    expect(instance?.output).toEqual({
+      "branch-a": { result: "a" },
+      "branch-b": { result: "b" },
+    });
+  });
+
+  it("should fail-fast when a branch fails (default)", async () => {
+    const branch1 = workflow.branch("branch-ok")
+      .task("ok", {
+        handler: async () => {
+          await new Promise((r) => setTimeout(r, 100));
+          return { ok: true };
+        },
+      })
+      .build();
+
+    const branch2 = workflow.branch("branch-fail")
+      .task("fail", {
+        handler: async () => {
+          throw new Error("Branch failure");
+        },
+      })
+      .build();
+
+    const wf = workflow("parallel-fail-fast")
+      .isolated(false)
+      .parallel("fan-out", { branches: [branch1, branch2] })
+      .build();
+
+    workflows.register(wf);
+    const instanceId = await workflows.start("parallel-fail-fast", {});
+
+    await new Promise((r) => setTimeout(r, 300));
+
+    const instance = await workflows.getInstance(instanceId);
+    expect(instance?.status).toBe("failed");
+    expect(instance?.error).toContain("Branch failure");
+  });
+
+  it("should collect all results with wait-all and report errors", async () => {
+    const branch1 = workflow.branch("branch-ok-wa")
+      .task("ok", { handler: async () => ({ ok: true }) })
+      .build();
+
+    const branch2 = workflow.branch("branch-fail-wa")
+      .task("fail", {
+        handler: async () => {
+          throw new Error("Branch error");
+        },
+      })
+      .build();
+
+    const wf = workflow("parallel-wait-all")
+      .isolated(false)
+      .parallel("fan-out", {
+        branches: [branch1, branch2],
+        onError: "wait-all",
+      })
+      .build();
+
+    workflows.register(wf);
+    const instanceId = await workflows.start("parallel-wait-all", {});
+
+    await new Promise((r) => setTimeout(r, 300));
+
+    const instance = await workflows.getInstance(instanceId);
+    expect(instance?.status).toBe("failed");
+    expect(instance?.error).toContain("Parallel branches failed");
+  });
+});
+
+describe("Retry logic", () => {
+  let workflows: ReturnType<typeof createWorkflows>;
+  let adapter: MemoryWorkflowAdapter;
+
+  beforeEach(() => {
+    adapter = new MemoryWorkflowAdapter();
+    workflows = createWorkflows({ adapter });
+  });
+
+  afterEach(async () => {
+    await workflows.stop();
+  });
+
+  it("should retry step on failure with exponential backoff", async () => {
+    let attempts = 0;
+
+    const wf = workflow("retry-test")
+      .isolated(false)
+      .task("flaky", {
+        handler: async () => {
+          attempts++;
+          if (attempts < 3) {
+            throw new Error("Temporary failure");
+          }
+          return { success: true };
+        },
+        retry: {
+          maxAttempts: 3,
+          intervalMs: 50,
+          backoffRate: 2,
+        },
+      })
+      .build();
+
+    workflows.register(wf);
+    const instanceId = await workflows.start("retry-test", {});
+
+    // Wait long enough for retries (50ms + 100ms + execution time)
+    await new Promise((r) => setTimeout(r, 500));
+
+    const instance = await workflows.getInstance(instanceId);
+    expect(instance?.status).toBe("completed");
+    expect(attempts).toBe(3);
+    expect(instance?.output).toEqual({ success: true });
+  });
+
+  it("should fail after exhausting retries", async () => {
+    let attempts = 0;
+
+    const wf = workflow("retry-exhaust")
+      .isolated(false)
+      .task("always-fail", {
+        handler: async () => {
+          attempts++;
+          throw new Error("Permanent failure");
+        },
+        retry: {
+          maxAttempts: 2,
+          intervalMs: 50,
+        },
+      })
+      .build();
+
+    workflows.register(wf);
+    const instanceId = await workflows.start("retry-exhaust", {});
+
+    await new Promise((r) => setTimeout(r, 500));
+
+    const instance = await workflows.getInstance(instanceId);
+    expect(instance?.status).toBe("failed");
+    expect(instance?.error).toContain("Permanent failure");
+    expect(attempts).toBe(2);
+  });
+});
+
+describe("Metadata persistence", () => {
+  let workflows: ReturnType<typeof createWorkflows>;
+  let adapter: MemoryWorkflowAdapter;
+
+  beforeEach(() => {
+    adapter = new MemoryWorkflowAdapter();
+    workflows = createWorkflows({ adapter });
+  });
+
+  afterEach(async () => {
+    await workflows.stop();
+  });
+
+  it("should persist metadata across steps", async () => {
+    let secondStepMetadata: any;
+
+    const wf = workflow("metadata-test")
+      .isolated(false)
+      .task("set-meta", {
+        handler: async (_, ctx) => {
+          await ctx.setMetadata("tracking", { id: "abc-123" });
+          return { done: true };
+        },
+      })
+      .task("read-meta", {
+        handler: async (_, ctx) => {
+          secondStepMetadata = ctx.getMetadata("tracking");
+          return { meta: secondStepMetadata };
+        },
+      })
+      .build();
+
+    workflows.register(wf);
+    const instanceId = await workflows.start("metadata-test", {});
+
+    await new Promise((r) => setTimeout(r, 200));
+
+    const instance = await workflows.getInstance(instanceId);
+    expect(instance?.status).toBe("completed");
+    expect(secondStepMetadata).toEqual({ id: "abc-123" });
+  });
+});

@@ -22,6 +22,7 @@ import {
   type ProxyRequest,
 } from "./workflow-socket";
 import { isProcessAlive } from "./external-jobs";
+import { WorkflowStateMachine, type StateMachineEvents } from "./workflow-state-machine";
 
 // Type helper for Zod schema inference
 type ZodSchema = z.ZodTypeAny;
@@ -655,7 +656,7 @@ export interface Workflows {
 }
 
 // ============================================
-// Workflow Service Implementation
+// Workflow Service Implementation (Supervisor)
 // ============================================
 
 interface IsolatedProcessInfo {
@@ -667,13 +668,13 @@ interface IsolatedProcessInfo {
 
 class WorkflowsImpl implements Workflows {
   private adapter: WorkflowAdapter;
-  private events?: Events;
+  private eventsService?: Events;
   private jobs?: Jobs;
   private sse?: SSE;
   private core?: CoreServices;
   private plugins: Record<string, any> = {};
   private definitions = new Map<string, WorkflowDefinition>();
-  private running = new Map<string, { timeout?: ReturnType<typeof setTimeout> }>();
+  private running = new Map<string, { timeout?: ReturnType<typeof setTimeout>; sm?: WorkflowStateMachine }>();
   private pollInterval: number;
 
   // Isolated execution state
@@ -687,7 +688,7 @@ class WorkflowsImpl implements Workflows {
 
   constructor(config: WorkflowsConfig = {}) {
     this.adapter = config.adapter ?? new MemoryWorkflowAdapter();
-    this.events = config.events;
+    this.eventsService = config.events;
     this.jobs = config.jobs;
     this.sse = config.sse;
     this.core = config.core;
@@ -760,18 +761,6 @@ class WorkflowsImpl implements Workflows {
       throw new Error(`Workflow "${definition.name}" is already registered`);
     }
 
-    // Validate isolated workflows don't use unsupported step types
-    if (definition.isolated !== false) {
-      for (const [stepName, step] of definition.steps) {
-        if (step.type === "choice" || step.type === "parallel") {
-          throw new Error(
-            `Workflow "${definition.name}" uses ${step.type} step "${stepName}" ` +
-            `which is not supported in isolated mode. Use .isolated(false) to run inline.`
-          );
-        }
-      }
-    }
-
     // Store module path for isolated workflows
     if (options?.modulePath) {
       this.workflowModulePaths.set(definition.name, options.modulePath);
@@ -829,13 +818,13 @@ class WorkflowsImpl implements Workflows {
       // Execute in isolated subprocess
       this.executeIsolatedWorkflow(instance.id, definition, input, modulePath);
     } else {
-      // Execute inline (existing behavior)
+      // Execute inline using state machine
       if (isIsolated && !modulePath) {
         console.warn(
           `[Workflows] Workflow "${workflowName}" falling back to inline execution (no modulePath)`
         );
       }
-      this.executeWorkflow(instance.id, definition);
+      this.startInlineWorkflow(instance.id, definition);
     }
 
     return instance.id;
@@ -865,8 +854,11 @@ class WorkflowsImpl implements Workflows {
       await this.getSocketServer().closeSocket(instanceId);
     }
 
-    // Clear inline timeout
+    // Cancel inline state machine if running
     const runInfo = this.running.get(instanceId);
+    if (runInfo?.sm) {
+      runInfo.sm.cancel(instanceId);
+    }
     if (runInfo?.timeout) {
       clearTimeout(runInfo.timeout);
     }
@@ -918,7 +910,7 @@ class WorkflowsImpl implements Workflows {
       if (isIsolated && modulePath && this.dbPath) {
         this.executeIsolatedWorkflow(instance.id, definition, instance.input, modulePath);
       } else {
-        this.executeWorkflow(instance.id, definition);
+        this.startInlineWorkflow(instance.id, definition);
       }
     }
   }
@@ -942,8 +934,11 @@ class WorkflowsImpl implements Workflows {
       this.socketServer = undefined;
     }
 
-    // Clear all inline timeouts
+    // Clear all inline timeouts and cancel state machines
     for (const [instanceId, runInfo] of this.running) {
+      if (runInfo.sm) {
+        runInfo.sm.cancel(instanceId);
+      }
       if (runInfo.timeout) {
         clearTimeout(runInfo.timeout);
       }
@@ -957,759 +952,175 @@ class WorkflowsImpl implements Workflows {
   }
 
   // ============================================
-  // Execution Engine
+  // Inline Execution via State Machine
   // ============================================
 
-  private async executeWorkflow(
+  private startInlineWorkflow(
     instanceId: string,
-    definition: WorkflowDefinition
-  ): Promise<void> {
-    const instance = await this.adapter.getInstance(instanceId);
-    if (!instance) return;
-
-    // Mark as running
-    if (instance.status === "pending") {
-      await this.adapter.updateInstance(instanceId, {
-        status: "running",
-        startedAt: new Date(),
-      });
-    }
+    definition: WorkflowDefinition,
+  ): void {
+    const sm = new WorkflowStateMachine({
+      adapter: this.adapter,
+      core: this.core,
+      plugins: this.plugins,
+      events: this.createInlineEventHandler(instanceId),
+      jobs: this.jobs,
+      pollInterval: this.pollInterval,
+    });
 
     // Set up workflow timeout
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     if (definition.timeout) {
-      const timeout = setTimeout(async () => {
-        await this.failWorkflow(instanceId, "Workflow timed out");
-      }, definition.timeout);
-      this.running.set(instanceId, { timeout });
-    } else {
-      this.running.set(instanceId, {});
-    }
-
-    // Execute current step
-    await this.executeStep(instanceId, definition);
-  }
-
-  private async executeStep(
-    instanceId: string,
-    definition: WorkflowDefinition
-  ): Promise<void> {
-    const instance = await this.adapter.getInstance(instanceId);
-    if (!instance || instance.status !== "running") return;
-
-    const stepName = instance.currentStep;
-    if (!stepName) {
-      await this.completeWorkflow(instanceId);
-      return;
-    }
-
-    const step = definition.steps.get(stepName);
-    if (!step) {
-      await this.failWorkflow(instanceId, `Step "${stepName}" not found`);
-      return;
-    }
-
-    // Build context
-    const ctx = this.buildContext(instance, definition);
-
-    // Emit step started event
-    await this.emitEvent("workflow.step.started", {
-      instanceId,
-      workflowName: instance.workflowName,
-      stepName,
-      stepType: step.type,
-    });
-
-    // Broadcast via SSE
-    if (this.sse) {
-      this.sse.broadcast(`workflow:${instanceId}`, "step.started", { stepName });
-      this.sse.broadcast("workflows:all", "workflow.step.started", {
-        instanceId,
-        workflowName: instance.workflowName,
-        stepName,
-      });
-    }
-
-    // Update step result as running
-    const stepResult: StepResult = {
-      stepName,
-      status: "running",
-      startedAt: new Date(),
-      attempts: (instance.stepResults[stepName]?.attempts ?? 0) + 1,
-    };
-    await this.adapter.updateInstance(instanceId, {
-      stepResults: { ...instance.stepResults, [stepName]: stepResult },
-    });
-
-    try {
-      let output: any;
-
-      switch (step.type) {
-        case "task":
-          output = await this.executeTaskStep(instanceId, step, ctx, definition);
-          break;
-        case "parallel":
-          output = await this.executeParallelStep(instanceId, step, ctx, definition);
-          break;
-        case "choice":
-          output = await this.executeChoiceStep(instanceId, step, ctx, definition);
-          break;
-        case "pass":
-          output = await this.executePassStep(instanceId, step, ctx);
-          break;
-      }
-
-      // Step completed successfully
-      await this.completeStep(instanceId, stepName, output, step, definition);
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      await this.handleStepError(instanceId, stepName, errorMsg, step, definition);
-    }
-  }
-
-  private async executeTaskStep(
-    instanceId: string,
-    step: TaskStepDefinition,
-    ctx: WorkflowContext,
-    definition: WorkflowDefinition
-  ): Promise<any> {
-    // Determine which API is being used
-    const useInlineHandler = !!step.handler;
-
-    if (useInlineHandler) {
-      // === NEW API: Inline handler with Zod schemas ===
-      let input: any;
-
-      if (step.inputSchema) {
-        if (typeof step.inputSchema === "function") {
-          // inputSchema is a mapper function: (prev, workflowInput) => input
-          input = step.inputSchema(ctx.prev, ctx.input);
-        } else {
-          // inputSchema is a Zod schema - validate workflow input
-          const parseResult = step.inputSchema.safeParse(ctx.input);
-          if (!parseResult.success) {
-            throw new Error(`Input validation failed: ${parseResult.error.message}`);
-          }
-          input = parseResult.data;
-        }
-      } else {
-        // No input schema, use workflow input directly
-        input = ctx.input;
-      }
-
-      // Update step with input
-      const instance = await this.adapter.getInstance(instanceId);
-      if (instance) {
-        const stepResult = instance.stepResults[step.name];
-        if (stepResult) {
-          stepResult.input = input;
-          await this.adapter.updateInstance(instanceId, {
-            stepResults: { ...instance.stepResults, [step.name]: stepResult },
-          });
-        }
-      }
-
-      // Execute the inline handler
-      let result = await step.handler!(input, ctx);
-
-      // Validate output if schema provided
-      if (step.outputSchema) {
-        const parseResult = step.outputSchema.safeParse(result);
-        if (!parseResult.success) {
-          throw new Error(`Output validation failed: ${parseResult.error.message}`);
-        }
-        result = parseResult.data;
-      }
-
-      return result;
-    } else {
-      // === LEGACY API: Job-based execution ===
-      if (!this.jobs) {
-        throw new Error("Jobs service not configured");
-      }
-
-      if (!step.job) {
-        throw new Error("Task step requires either 'handler' or 'job'");
-      }
-
-      // Prepare job input
-      const jobInput = step.input ? step.input(ctx) : ctx.input;
-
-      // Update step with input
-      const instance = await this.adapter.getInstance(instanceId);
-      if (instance) {
-        const stepResult = instance.stepResults[step.name];
-        if (stepResult) {
-          stepResult.input = jobInput;
-          await this.adapter.updateInstance(instanceId, {
-            stepResults: { ...instance.stepResults, [step.name]: stepResult },
-          });
-        }
-      }
-
-      // Enqueue the job
-      const jobId = await this.jobs.enqueue(step.job, {
-        ...jobInput,
-        _workflowInstanceId: instanceId,
-        _workflowStepName: step.name,
-      });
-
-      // Wait for job completion
-      const result = await this.waitForJob(jobId, step.timeout);
-
-      // Transform output if needed
-      return step.output ? step.output(result, ctx) : result;
-    }
-  }
-
-  private async waitForJob(jobId: string, timeout?: number): Promise<any> {
-    if (!this.jobs) {
-      throw new Error("Jobs service not configured");
-    }
-
-    const startTime = Date.now();
-
-    while (true) {
-      const job = await this.jobs.get(jobId);
-
-      if (!job) {
-        throw new Error(`Job ${jobId} not found`);
-      }
-
-      if (job.status === "completed") {
-        return job.result;
-      }
-
-      if (job.status === "failed") {
-        throw new Error(job.error ?? "Job failed");
-      }
-
-      // Check timeout
-      if (timeout && Date.now() - startTime > timeout) {
-        throw new Error("Job timed out");
-      }
-
-      // Wait before polling again
-      await new Promise((resolve) => setTimeout(resolve, this.pollInterval));
-    }
-  }
-
-  private async executeParallelStep(
-    instanceId: string,
-    step: ParallelStepDefinition,
-    ctx: WorkflowContext,
-    definition: WorkflowDefinition
-  ): Promise<any> {
-    const branchPromises: Promise<{ name: string; result: any }>[] = [];
-    const branchInstanceIds: string[] = [];
-
-    for (const branchDef of step.branches) {
-      // Register branch workflow if not already
-      if (!this.definitions.has(branchDef.name)) {
-        this.definitions.set(branchDef.name, branchDef);
-      }
-
-      // Start branch as sub-workflow
-      const branchInstanceId = await this.adapter.createInstance({
-        workflowName: branchDef.name,
-        status: "pending",
-        currentStep: branchDef.startAt,
-        input: ctx.input,
-        stepResults: {},
-        createdAt: new Date(),
-        parentId: instanceId,
-        branchName: branchDef.name,
-      });
-
-      branchInstanceIds.push(branchInstanceId.id);
-
-      // Execute branch
-      const branchPromise = (async () => {
-        await this.executeWorkflow(branchInstanceId.id, branchDef);
-
-        // Wait for branch completion
-        while (true) {
-          const branchInstance = await this.adapter.getInstance(branchInstanceId.id);
-          if (!branchInstance) {
-            throw new Error(`Branch instance ${branchInstanceId.id} not found`);
-          }
-
-          if (branchInstance.status === "completed") {
-            return { name: branchDef.name, result: branchInstance.output };
-          }
-
-          if (branchInstance.status === "failed") {
-            throw new Error(branchInstance.error ?? `Branch ${branchDef.name} failed`);
-          }
-
-          await new Promise((resolve) => setTimeout(resolve, this.pollInterval));
-        }
-      })();
-
-      branchPromises.push(branchPromise);
-    }
-
-    // Track branch instances
-    await this.adapter.updateInstance(instanceId, {
-      branchInstances: {
-        ...((await this.adapter.getInstance(instanceId))?.branchInstances ?? {}),
-        [step.name]: branchInstanceIds,
-      },
-    });
-
-    // Wait for all branches
-    if (step.onError === "wait-all") {
-      const results = await Promise.allSettled(branchPromises);
-      const output: Record<string, any> = {};
-      const errors: string[] = [];
-
-      for (const result of results) {
-        if (result.status === "fulfilled") {
-          output[result.value.name] = result.value.result;
-        } else {
-          errors.push(result.reason?.message ?? "Branch failed");
-        }
-      }
-
-      if (errors.length > 0) {
-        throw new Error(`Parallel branches failed: ${errors.join(", ")}`);
-      }
-
-      return output;
-    } else {
-      // fail-fast (default)
-      const results = await Promise.all(branchPromises);
-      const output: Record<string, any> = {};
-      for (const result of results) {
-        output[result.name] = result.result;
-      }
-      return output;
-    }
-  }
-
-  private async executeChoiceStep(
-    instanceId: string,
-    step: ChoiceStepDefinition,
-    ctx: WorkflowContext,
-    definition: WorkflowDefinition
-  ): Promise<string> {
-    // Evaluate conditions in order
-    for (const choice of step.choices) {
-      try {
-        if (choice.condition(ctx)) {
-          // Update current step and continue
-          await this.adapter.updateInstance(instanceId, {
-            currentStep: choice.next,
-          });
-
-          // Mark choice step as complete
-          const instance = await this.adapter.getInstance(instanceId);
-          if (instance) {
-            const stepResult = instance.stepResults[step.name];
-            if (stepResult) {
-              stepResult.status = "completed";
-              stepResult.output = { chosen: choice.next };
-              stepResult.completedAt = new Date();
-              await this.adapter.updateInstance(instanceId, {
-                stepResults: { ...instance.stepResults, [step.name]: stepResult },
-              });
-            }
-          }
-
-          // Emit progress
-          await this.emitEvent("workflow.step.completed", {
+      timeout = setTimeout(async () => {
+        sm.cancel(instanceId);
+        await this.adapter.updateInstance(instanceId, {
+          status: "failed",
+          error: "Workflow timed out",
+          completedAt: new Date(),
+        });
+        await this.emitEvent("workflow.failed", {
+          instanceId,
+          workflowName: definition.name,
+          error: "Workflow timed out",
+        });
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${instanceId}`, "failed", { error: "Workflow timed out" });
+          this.sse.broadcast("workflows:all", "workflow.failed", {
             instanceId,
-            workflowName: (await this.adapter.getInstance(instanceId))?.workflowName,
-            stepName: step.name,
-            output: { chosen: choice.next },
-          });
-
-          // Execute next step
-          await this.executeStep(instanceId, definition);
-          return choice.next;
-        }
-      } catch {
-        // Condition threw, try next
-      }
-    }
-
-    // No condition matched, use default
-    if (step.default) {
-      await this.adapter.updateInstance(instanceId, {
-        currentStep: step.default,
-      });
-
-      // Mark choice step as complete
-      const instance = await this.adapter.getInstance(instanceId);
-      if (instance) {
-        const stepResult = instance.stepResults[step.name];
-        if (stepResult) {
-          stepResult.status = "completed";
-          stepResult.output = { chosen: step.default };
-          stepResult.completedAt = new Date();
-          await this.adapter.updateInstance(instanceId, {
-            stepResults: { ...instance.stepResults, [step.name]: stepResult },
+            workflowName: definition.name,
+            error: "Workflow timed out",
           });
         }
-      }
-
-      await this.emitEvent("workflow.step.completed", {
-        instanceId,
-        workflowName: instance?.workflowName,
-        stepName: step.name,
-        output: { chosen: step.default },
-      });
-
-      await this.executeStep(instanceId, definition);
-      return step.default;
+        this.running.delete(instanceId);
+      }, definition.timeout);
     }
 
-    throw new Error("No choice condition matched and no default specified");
+    this.running.set(instanceId, { timeout, sm });
+
+    // Run the state machine (fire and forget - events handle communication)
+    sm.run(instanceId, definition).then(() => {
+      // Clean up timeout on completion
+      const runInfo = this.running.get(instanceId);
+      if (runInfo?.timeout) {
+        clearTimeout(runInfo.timeout);
+      }
+      this.running.delete(instanceId);
+    }).catch(() => {
+      // State machine already persisted the failure - just clean up
+      const runInfo = this.running.get(instanceId);
+      if (runInfo?.timeout) {
+        clearTimeout(runInfo.timeout);
+      }
+      this.running.delete(instanceId);
+    });
   }
 
-  private async executePassStep(
-    instanceId: string,
-    step: PassStepDefinition,
-    ctx: WorkflowContext
-  ): Promise<any> {
-    if (step.result !== undefined) {
-      return step.result;
-    }
-
-    if (step.transform) {
-      return step.transform(ctx);
-    }
-
-    return ctx.input;
-  }
-
-  private buildContext(instance: WorkflowInstance, definition: WorkflowDefinition): WorkflowContext {
-    // Build steps object with outputs
-    const steps: Record<string, any> = {};
-    for (const [name, result] of Object.entries(instance.stepResults)) {
-      if (result.status === "completed" && result.output !== undefined) {
-        steps[name] = result.output;
-      }
-    }
-
-    // Find the previous step's output by tracing the workflow path
-    let prev: any = undefined;
-    if (instance.currentStep) {
-      // Find which step comes before current step
-      for (const [stepName, stepDef] of definition.steps) {
-        if (stepDef.next === instance.currentStep && steps[stepName] !== undefined) {
-          prev = steps[stepName];
-          break;
-        }
-      }
-      // If no explicit next found, use most recent completed step output
-      if (prev === undefined) {
-        const completedSteps = Object.entries(instance.stepResults)
-          .filter(([, r]) => r.status === "completed" && r.output !== undefined)
-          .sort((a, b) => {
-            const aTime = a[1].completedAt?.getTime() ?? 0;
-            const bTime = b[1].completedAt?.getTime() ?? 0;
-            return bTime - aTime;
-          });
-        if (completedSteps.length > 0) {
-          prev = completedSteps[0][1].output;
-        }
-      }
-    }
-
-    // Metadata snapshot (mutable reference for setMetadata updates)
-    const metadata = { ...(instance.metadata ?? {}) };
-
+  /**
+   * Create an event handler that bridges state machine events to Events service + SSE
+   */
+  private createInlineEventHandler(instanceId: string): StateMachineEvents {
     return {
-      input: instance.input,
-      steps,
-      prev,
-      instance,
-      getStepResult: <T = any>(stepName: string): T | undefined => {
-        return steps[stepName] as T | undefined;
+      onStepStarted: (id, stepName, stepType) => {
+        this.emitEvent("workflow.step.started", {
+          instanceId: id,
+          stepName,
+          stepType,
+        });
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${id}`, "step.started", { stepName });
+          this.sse.broadcast("workflows:all", "workflow.step.started", {
+            instanceId: id,
+            stepName,
+          });
+        }
       },
-      core: this.core!,
-      plugins: this.plugins,
-      metadata,
-      setMetadata: async (key: string, value: any): Promise<void> => {
-        // Update local snapshot
-        metadata[key] = value;
-        // Persist to database
-        await this.adapter.updateInstance(instance.id, {
-          metadata: { ...metadata },
+      onStepCompleted: (id, stepName, output, nextStep) => {
+        this.emitEvent("workflow.step.completed", {
+          instanceId: id,
+          stepName,
+          output,
+        });
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${id}`, "step.completed", { stepName, output });
+          this.sse.broadcast("workflows:all", "workflow.step.completed", {
+            instanceId: id,
+            stepName,
+          });
+        }
+      },
+      onStepFailed: (id, stepName, error, attempts) => {
+        this.emitEvent("workflow.step.failed", {
+          instanceId: id,
+          stepName,
+          error,
+          attempts,
+        });
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${id}`, "step.failed", { stepName, error });
+          this.sse.broadcast("workflows:all", "workflow.step.failed", {
+            instanceId: id,
+            stepName,
+            error,
+          });
+        }
+      },
+      onStepRetry: (id, stepName, attempt, max, delayMs) => {
+        this.emitEvent("workflow.step.retry", {
+          instanceId: id,
+          stepName,
+          attempt,
+          maxAttempts: max,
+          delay: delayMs,
         });
       },
-      getMetadata: <T = any>(key: string): T | undefined => {
-        return metadata[key] as T | undefined;
+      onProgress: (id, progress, currentStep, completed, total) => {
+        this.emitEvent("workflow.progress", {
+          instanceId: id,
+          progress,
+          currentStep,
+          completedSteps: completed,
+          totalSteps: total,
+        });
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${id}`, "progress", {
+            progress,
+            currentStep,
+            completedSteps: completed,
+            totalSteps: total,
+          });
+          this.sse.broadcast("workflows:all", "workflow.progress", {
+            instanceId: id,
+            progress,
+            currentStep,
+          });
+        }
+      },
+      onCompleted: (id, output) => {
+        this.emitEvent("workflow.completed", {
+          instanceId: id,
+          output,
+        });
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${id}`, "completed", { output });
+          this.sse.broadcast("workflows:all", "workflow.completed", {
+            instanceId: id,
+          });
+        }
+      },
+      onFailed: (id, error) => {
+        this.emitEvent("workflow.failed", {
+          instanceId: id,
+          error,
+        });
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${id}`, "failed", { error });
+          this.sse.broadcast("workflows:all", "workflow.failed", {
+            instanceId: id,
+            error,
+          });
+        }
       },
     };
-  }
-
-  private async completeStep(
-    instanceId: string,
-    stepName: string,
-    output: any,
-    step: StepDefinition,
-    definition: WorkflowDefinition
-  ): Promise<void> {
-    const instance = await this.adapter.getInstance(instanceId);
-    if (!instance) return;
-
-    // Check if workflow is still running (not cancelled/failed/timed out)
-    if (instance.status !== "running") {
-      console.log(`[Workflows] Ignoring step completion for ${instanceId}, status is ${instance.status}`);
-      return;
-    }
-
-    // Update step result
-    const stepResult = instance.stepResults[stepName] ?? {
-      stepName,
-      status: "pending",
-      attempts: 0,
-    };
-    stepResult.status = "completed";
-    stepResult.output = output;
-    stepResult.completedAt = new Date();
-
-    await this.adapter.updateInstance(instanceId, {
-      stepResults: { ...instance.stepResults, [stepName]: stepResult },
-    });
-
-    // Emit step completed event
-    await this.emitEvent("workflow.step.completed", {
-      instanceId,
-      workflowName: instance.workflowName,
-      stepName,
-      output,
-    });
-
-    // Broadcast step completed via SSE
-    if (this.sse) {
-      this.sse.broadcast(`workflow:${instanceId}`, "step.completed", {
-        stepName,
-        output,
-      });
-      this.sse.broadcast("workflows:all", "workflow.step.completed", {
-        instanceId,
-        workflowName: instance.workflowName,
-        stepName,
-      });
-    }
-
-    // Calculate and emit progress
-    const totalSteps = definition.steps.size;
-    const completedSteps = Object.values(instance.stepResults).filter(
-      (r) => r.status === "completed"
-    ).length + 1; // +1 for current step
-    const progress = Math.round((completedSteps / totalSteps) * 100);
-
-    await this.emitEvent("workflow.progress", {
-      instanceId,
-      workflowName: instance.workflowName,
-      progress,
-      currentStep: stepName,
-      completedSteps,
-      totalSteps,
-    });
-
-    // Broadcast progress via SSE
-    if (this.sse) {
-      this.sse.broadcast(`workflow:${instanceId}`, "progress", {
-        progress,
-        currentStep: stepName,
-        completedSteps,
-        totalSteps,
-      });
-      this.sse.broadcast("workflows:all", "workflow.progress", {
-        instanceId,
-        workflowName: instance.workflowName,
-        progress,
-        currentStep: stepName,
-      });
-    }
-
-    // Move to next step or complete
-    if (step.end) {
-      await this.completeWorkflow(instanceId, output);
-    } else if (step.next) {
-      await this.adapter.updateInstance(instanceId, {
-        currentStep: step.next,
-      });
-      await this.executeStep(instanceId, definition);
-    } else {
-      // No next step, complete
-      await this.completeWorkflow(instanceId, output);
-    }
-  }
-
-  private async handleStepError(
-    instanceId: string,
-    stepName: string,
-    error: string,
-    step: StepDefinition,
-    definition: WorkflowDefinition
-  ): Promise<void> {
-    const instance = await this.adapter.getInstance(instanceId);
-    if (!instance) return;
-
-    const stepResult = instance.stepResults[stepName] ?? {
-      stepName,
-      status: "pending",
-      attempts: 0,
-    };
-
-    // Check retry config
-    const retry = step.retry ?? definition.defaultRetry;
-    if (retry && stepResult.attempts < retry.maxAttempts) {
-      // Retry with backoff
-      const backoffRate = retry.backoffRate ?? 2;
-      const intervalMs = retry.intervalMs ?? 1000;
-      const maxIntervalMs = retry.maxIntervalMs ?? 30000;
-      const delay = Math.min(
-        intervalMs * Math.pow(backoffRate, stepResult.attempts - 1),
-        maxIntervalMs
-      );
-
-      console.log(
-        `[Workflows] Retrying step ${stepName} in ${delay}ms (attempt ${stepResult.attempts}/${retry.maxAttempts})`
-      );
-
-      await this.emitEvent("workflow.step.retry", {
-        instanceId,
-        workflowName: instance.workflowName,
-        stepName,
-        attempt: stepResult.attempts,
-        maxAttempts: retry.maxAttempts,
-        delay,
-        error,
-      });
-
-      // Update step result
-      stepResult.error = error;
-      await this.adapter.updateInstance(instanceId, {
-        stepResults: { ...instance.stepResults, [stepName]: stepResult },
-      });
-
-      // Retry after delay
-      setTimeout(() => {
-        this.executeStep(instanceId, definition);
-      }, delay);
-
-      return;
-    }
-
-    // No more retries, fail the step
-    stepResult.status = "failed";
-    stepResult.error = error;
-    stepResult.completedAt = new Date();
-
-    await this.adapter.updateInstance(instanceId, {
-      stepResults: { ...instance.stepResults, [stepName]: stepResult },
-    });
-
-    await this.emitEvent("workflow.step.failed", {
-      instanceId,
-      workflowName: instance.workflowName,
-      stepName,
-      error,
-      attempts: stepResult.attempts,
-    });
-
-    // Broadcast step failed via SSE
-    if (this.sse) {
-      this.sse.broadcast(`workflow:${instanceId}`, "step.failed", {
-        stepName,
-        error,
-      });
-      this.sse.broadcast("workflows:all", "workflow.step.failed", {
-        instanceId,
-        workflowName: instance.workflowName,
-        stepName,
-        error,
-      });
-    }
-
-    // Fail the workflow
-    await this.failWorkflow(instanceId, `Step "${stepName}" failed: ${error}`);
-  }
-
-  private async completeWorkflow(instanceId: string, output?: any): Promise<void> {
-    const instance = await this.adapter.getInstance(instanceId);
-    if (!instance) return;
-
-    // Check if workflow is still running (not cancelled/failed/timed out)
-    if (instance.status !== "running") {
-      console.log(`[Workflows] Ignoring workflow completion for ${instanceId}, status is ${instance.status}`);
-      return;
-    }
-
-    // Clear timeout
-    const runInfo = this.running.get(instanceId);
-    if (runInfo?.timeout) {
-      clearTimeout(runInfo.timeout);
-    }
-    this.running.delete(instanceId);
-
-    await this.adapter.updateInstance(instanceId, {
-      status: "completed",
-      output,
-      completedAt: new Date(),
-      currentStep: undefined,
-    });
-
-    await this.emitEvent("workflow.completed", {
-      instanceId,
-      workflowName: instance.workflowName,
-      output,
-    });
-
-    // Broadcast via SSE
-    if (this.sse) {
-      this.sse.broadcast(`workflow:${instanceId}`, "completed", { output });
-      this.sse.broadcast("workflows:all", "workflow.completed", {
-        instanceId,
-        workflowName: instance.workflowName,
-      });
-    }
-  }
-
-  private async failWorkflow(instanceId: string, error: string): Promise<void> {
-    const instance = await this.adapter.getInstance(instanceId);
-    if (!instance) return;
-
-    // Clear timeout
-    const runInfo = this.running.get(instanceId);
-    if (runInfo?.timeout) {
-      clearTimeout(runInfo.timeout);
-    }
-    this.running.delete(instanceId);
-
-    await this.adapter.updateInstance(instanceId, {
-      status: "failed",
-      error,
-      completedAt: new Date(),
-    });
-
-    await this.emitEvent("workflow.failed", {
-      instanceId,
-      workflowName: instance.workflowName,
-      error,
-    });
-
-    // Broadcast via SSE
-    if (this.sse) {
-      this.sse.broadcast(`workflow:${instanceId}`, "failed", { error });
-      this.sse.broadcast("workflows:all", "workflow.failed", {
-        instanceId,
-        workflowName: instance.workflowName,
-        error,
-      });
-    }
-  }
-
-  private async emitEvent(event: string, data: any): Promise<void> {
-    if (this.events) {
-      await this.events.emit(event, data);
-    }
   }
 
   // ============================================
@@ -1799,13 +1210,33 @@ class WorkflowsImpl implements Workflows {
       const instance = await this.adapter.getInstance(instanceId);
       if (instance && instance.status === "running") {
         console.error(`[Workflows] Isolated workflow ${instanceId} crashed with exit code ${exitCode}`);
-        await this.failWorkflow(instanceId, `Subprocess crashed with exit code ${exitCode}`);
+        await this.adapter.updateInstance(instanceId, {
+          status: "failed",
+          error: `Subprocess crashed with exit code ${exitCode}`,
+          completedAt: new Date(),
+        });
+        await this.emitEvent("workflow.failed", {
+          instanceId,
+          workflowName: instance.workflowName,
+          error: `Subprocess crashed with exit code ${exitCode}`,
+        });
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${instanceId}`, "failed", {
+            error: `Subprocess crashed with exit code ${exitCode}`,
+          });
+          this.sse.broadcast("workflows:all", "workflow.failed", {
+            instanceId,
+            workflowName: instance.workflowName,
+            error: `Subprocess crashed with exit code ${exitCode}`,
+          });
+        }
       }
     });
   }
 
   /**
-   * Handle events from isolated workflow subprocess
+   * Handle events from isolated workflow subprocess.
+   * The subprocess owns persistence via its own adapter - we only forward events to SSE/Events.
    */
   private async handleIsolatedEvent(event: WorkflowEvent): Promise<void> {
     const { instanceId, type } = event;
@@ -1819,42 +1250,22 @@ class WorkflowsImpl implements Workflows {
 
     switch (type) {
       case "started":
-        // Already marked as running in executeIsolatedWorkflow
-        break;
-
       case "heartbeat":
-        // Heartbeat handled above
+        // No-op: heartbeat handled above, started is handled by executeIsolatedWorkflow
         break;
 
       case "step.started": {
-        const instance = await this.adapter.getInstance(instanceId);
-        if (!instance) break;
-
-        // Update current step and step results in DB
-        const stepResult = {
-          stepName: event.stepName!,
-          status: "running" as const,
-          startedAt: new Date(),
-          attempts: (instance.stepResults[event.stepName!]?.attempts ?? 0) + 1,
-        };
-        await this.adapter.updateInstance(instanceId, {
-          currentStep: event.stepName,
-          stepResults: { ...instance.stepResults, [event.stepName!]: stepResult },
-        });
-
         await this.emitEvent("workflow.step.started", {
           instanceId,
-          workflowName: instance?.workflowName,
           stepName: event.stepName,
+          stepType: event.stepType,
         });
-        // Broadcast via SSE
         if (this.sse) {
           this.sse.broadcast(`workflow:${instanceId}`, "step.started", {
             stepName: event.stepName,
           });
           this.sse.broadcast("workflows:all", "workflow.step.started", {
             instanceId,
-            workflowName: instance?.workflowName,
             stepName: event.stepName,
           });
         }
@@ -1862,32 +1273,11 @@ class WorkflowsImpl implements Workflows {
       }
 
       case "step.completed": {
-        const instance = await this.adapter.getInstance(instanceId);
-        if (!instance) break;
-
-        // Update step results in DB
-        const stepResult = instance.stepResults[event.stepName!] ?? {
-          stepName: event.stepName!,
-          status: "pending" as const,
-          startedAt: new Date(),
-          attempts: 0,
-        };
-        stepResult.status = "completed";
-        stepResult.output = event.output;
-        stepResult.completedAt = new Date();
-
-        await this.adapter.updateInstance(instanceId, {
-          stepResults: { ...instance.stepResults, [event.stepName!]: stepResult },
-          currentStep: event.nextStep,
-        });
-
         await this.emitEvent("workflow.step.completed", {
           instanceId,
-          workflowName: instance?.workflowName,
           stepName: event.stepName,
           output: event.output,
         });
-        // Broadcast via SSE
         if (this.sse) {
           this.sse.broadcast(`workflow:${instanceId}`, "step.completed", {
             stepName: event.stepName,
@@ -1895,7 +1285,6 @@ class WorkflowsImpl implements Workflows {
           });
           this.sse.broadcast("workflows:all", "workflow.step.completed", {
             instanceId,
-            workflowName: instance?.workflowName,
             stepName: event.stepName,
             output: event.output,
           });
@@ -1904,31 +1293,11 @@ class WorkflowsImpl implements Workflows {
       }
 
       case "step.failed": {
-        const instance = await this.adapter.getInstance(instanceId);
-        if (!instance) break;
-
-        // Update step results in DB
-        const stepResult = instance.stepResults[event.stepName!] ?? {
-          stepName: event.stepName!,
-          status: "pending" as const,
-          startedAt: new Date(),
-          attempts: 0,
-        };
-        stepResult.status = "failed";
-        stepResult.error = event.error;
-        stepResult.completedAt = new Date();
-
-        await this.adapter.updateInstance(instanceId, {
-          stepResults: { ...instance.stepResults, [event.stepName!]: stepResult },
-        });
-
         await this.emitEvent("workflow.step.failed", {
           instanceId,
-          workflowName: instance?.workflowName,
           stepName: event.stepName,
           error: event.error,
         });
-        // Broadcast via SSE
         if (this.sse) {
           this.sse.broadcast(`workflow:${instanceId}`, "step.failed", {
             stepName: event.stepName,
@@ -1936,7 +1305,6 @@ class WorkflowsImpl implements Workflows {
           });
           this.sse.broadcast("workflows:all", "workflow.step.failed", {
             instanceId,
-            workflowName: instance?.workflowName,
             stepName: event.stepName,
             error: event.error,
           });
@@ -1945,15 +1313,12 @@ class WorkflowsImpl implements Workflows {
       }
 
       case "progress": {
-        const instance = await this.adapter.getInstance(instanceId);
         await this.emitEvent("workflow.progress", {
           instanceId,
-          workflowName: instance?.workflowName,
           progress: event.progress,
           completedSteps: event.completedSteps,
           totalSteps: event.totalSteps,
         });
-        // Broadcast via SSE
         if (this.sse) {
           this.sse.broadcast(`workflow:${instanceId}`, "progress", {
             progress: event.progress,
@@ -1962,7 +1327,6 @@ class WorkflowsImpl implements Workflows {
           });
           this.sse.broadcast("workflows:all", "workflow.progress", {
             instanceId,
-            workflowName: instance?.workflowName,
             progress: event.progress,
             completedSteps: event.completedSteps,
             totalSteps: event.totalSteps,
@@ -1971,13 +1335,40 @@ class WorkflowsImpl implements Workflows {
         break;
       }
 
-      case "completed":
-        await this.completeWorkflowIsolated(instanceId, event.output);
-        break;
+      case "completed": {
+        // Clean up isolated process tracking
+        this.cleanupIsolatedProcess(instanceId);
 
-      case "failed":
-        await this.failWorkflowIsolated(instanceId, event.error ?? "Unknown error");
+        // Subprocess already persisted state - just emit events
+        await this.emitEvent("workflow.completed", {
+          instanceId,
+          output: event.output,
+        });
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${instanceId}`, "completed", { output: event.output });
+          this.sse.broadcast("workflows:all", "workflow.completed", { instanceId });
+        }
         break;
+      }
+
+      case "failed": {
+        // Clean up isolated process tracking
+        this.cleanupIsolatedProcess(instanceId);
+
+        // Subprocess already persisted state - just emit events
+        await this.emitEvent("workflow.failed", {
+          instanceId,
+          error: event.error,
+        });
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${instanceId}`, "failed", { error: event.error });
+          this.sse.broadcast("workflows:all", "workflow.failed", {
+            instanceId,
+            error: event.error,
+          });
+        }
+        break;
+      }
     }
   }
 
@@ -2012,6 +1403,18 @@ class WorkflowsImpl implements Workflows {
       return fn.apply(coreService, args);
     } else {
       throw new Error(`Unknown proxy target: ${target}`);
+    }
+  }
+
+  /**
+   * Clean up isolated process tracking
+   */
+  private cleanupIsolatedProcess(instanceId: string): void {
+    const info = this.isolatedProcesses.get(instanceId);
+    if (info) {
+      if (info.timeout) clearTimeout(info.timeout);
+      if (info.heartbeatTimeout) clearTimeout(info.heartbeatTimeout);
+      this.isolatedProcesses.delete(instanceId);
     }
   }
 
@@ -2060,83 +1463,27 @@ class WorkflowsImpl implements Workflows {
     await this.getSocketServer().closeSocket(instanceId);
 
     // Fail the workflow
-    await this.failWorkflow(instanceId, "Workflow timed out");
-  }
-
-  /**
-   * Complete an isolated workflow (called from event handler)
-   */
-  private async completeWorkflowIsolated(instanceId: string, output?: any): Promise<void> {
-    const instance = await this.adapter.getInstance(instanceId);
-    if (!instance) return;
-
-    // Clean up isolated process tracking (process should have exited)
-    const info = this.isolatedProcesses.get(instanceId);
-    if (info) {
-      if (info.timeout) clearTimeout(info.timeout);
-      if (info.heartbeatTimeout) clearTimeout(info.heartbeatTimeout);
-      this.isolatedProcesses.delete(instanceId);
-    }
-
-    await this.adapter.updateInstance(instanceId, {
-      status: "completed",
-      output,
-      completedAt: new Date(),
-      currentStep: undefined,
-    });
-
-    await this.emitEvent("workflow.completed", {
-      instanceId,
-      workflowName: instance.workflowName,
-      output,
-    });
-
-    // Broadcast via SSE
-    if (this.sse) {
-      this.sse.broadcast(`workflow:${instanceId}`, "completed", { output });
-      this.sse.broadcast("workflows:all", "workflow.completed", {
-        instanceId,
-        workflowName: instance.workflowName,
-        output,
-      });
-    }
-  }
-
-  /**
-   * Fail an isolated workflow (called from event handler)
-   */
-  private async failWorkflowIsolated(instanceId: string, error: string): Promise<void> {
-    const instance = await this.adapter.getInstance(instanceId);
-    if (!instance) return;
-
-    // Clean up isolated process tracking
-    const info = this.isolatedProcesses.get(instanceId);
-    if (info) {
-      if (info.timeout) clearTimeout(info.timeout);
-      if (info.heartbeatTimeout) clearTimeout(info.heartbeatTimeout);
-      this.isolatedProcesses.delete(instanceId);
-    }
-
     await this.adapter.updateInstance(instanceId, {
       status: "failed",
-      error,
+      error: "Workflow timed out",
       completedAt: new Date(),
     });
-
     await this.emitEvent("workflow.failed", {
       instanceId,
-      workflowName: instance.workflowName,
-      error,
+      error: "Workflow timed out",
     });
-
-    // Broadcast via SSE
     if (this.sse) {
-      this.sse.broadcast(`workflow:${instanceId}`, "failed", { error });
+      this.sse.broadcast(`workflow:${instanceId}`, "failed", { error: "Workflow timed out" });
       this.sse.broadcast("workflows:all", "workflow.failed", {
         instanceId,
-        workflowName: instance.workflowName,
-        error,
+        error: "Workflow timed out",
       });
+    }
+  }
+
+  private async emitEvent(event: string, data: any): Promise<void> {
+    if (this.eventsService) {
+      await this.eventsService.emit(event, data);
     }
   }
 }
