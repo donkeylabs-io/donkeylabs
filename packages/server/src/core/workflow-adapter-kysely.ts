@@ -31,6 +31,7 @@ interface WorkflowInstancesTable {
   completed_at: string | null;
   parent_id: string | null;
   branch_name: string | null;
+  metadata: string | null;
 }
 
 interface Database {
@@ -75,6 +76,7 @@ export class KyselyWorkflowAdapter implements WorkflowAdapter {
         completed_at: instance.completedAt?.toISOString() ?? null,
         parent_id: instance.parentId ?? null,
         branch_name: instance.branchName ?? null,
+        metadata: instance.metadata ? JSON.stringify(instance.metadata) : null,
       })
       .execute();
 
@@ -120,6 +122,9 @@ export class KyselyWorkflowAdapter implements WorkflowAdapter {
     }
     if (updates.completedAt !== undefined) {
       updateData.completed_at = updates.completedAt?.toISOString() ?? null;
+    }
+    if (updates.metadata !== undefined) {
+      updateData.metadata = updates.metadata ? JSON.stringify(updates.metadata) : null;
     }
 
     if (Object.keys(updateData).length === 0) return;
@@ -231,6 +236,7 @@ export class KyselyWorkflowAdapter implements WorkflowAdapter {
       completedAt: row.completed_at ? new Date(row.completed_at) : undefined,
       parentId: row.parent_id ?? undefined,
       branchName: row.branch_name ?? undefined,
+      metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
     };
   }
 

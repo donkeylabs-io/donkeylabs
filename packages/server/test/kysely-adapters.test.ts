@@ -74,6 +74,7 @@ async function createTestDb() {
     .addColumn("completed_at", "text")
     .addColumn("parent_id", "text")
     .addColumn("branch_name", "text")
+    .addColumn("metadata", "text")
     .execute();
 
   return db;

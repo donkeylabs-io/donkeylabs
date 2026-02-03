@@ -176,6 +176,8 @@ export interface WorkflowInstance {
   parentId?: string;
   /** Branch name if this is a branch instance */
   branchName?: string;
+  /** Custom metadata that persists across steps (JSON-serializable) */
+  metadata?: Record<string, any>;
 }
 
 // ============================================
@@ -197,6 +199,31 @@ export interface WorkflowContext {
   core: CoreServices;
   /** Plugin services - available for business logic in workflow handlers */
   plugins: Record<string, any>;
+  /**
+   * Custom metadata that persists across steps (read-only snapshot).
+   * Use setMetadata() to update values.
+   */
+  metadata: Record<string, any>;
+  /**
+   * Set a metadata value that persists across workflow steps.
+   * Accepts any JSON-serializable value (objects, arrays, primitives).
+   *
+   * @example
+   * await ctx.setMetadata('orderContext', {
+   *   correlationId: 'abc-123',
+   *   customer: { id: 'cust_1', tier: 'premium' },
+   *   flags: { expedited: true }
+   * });
+   */
+  setMetadata(key: string, value: any): Promise<void>;
+  /**
+   * Get a metadata value with type safety.
+   *
+   * @example
+   * interface OrderContext { correlationId: string; customer: { id: string } }
+   * const ctx = ctx.getMetadata<OrderContext>('orderContext');
+   */
+  getMetadata<T = any>(key: string): T | undefined;
 }
 
 // ============================================
@@ -1150,6 +1177,9 @@ class WorkflowsImpl implements Workflows {
       }
     }
 
+    // Metadata snapshot (mutable reference for setMetadata updates)
+    const metadata = { ...(instance.metadata ?? {}) };
+
     return {
       input: instance.input,
       steps,
@@ -1160,6 +1190,18 @@ class WorkflowsImpl implements Workflows {
       },
       core: this.core!,
       plugins: this.plugins,
+      metadata,
+      setMetadata: async (key: string, value: any): Promise<void> => {
+        // Update local snapshot
+        metadata[key] = value;
+        // Persist to database
+        await this.adapter.updateInstance(instance.id, {
+          metadata: { ...metadata },
+        });
+      },
+      getMetadata: <T = any>(key: string): T | undefined => {
+        return metadata[key] as T | undefined;
+      },
     };
   }
 
