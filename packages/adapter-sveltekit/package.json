@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/adapter-sveltekit",
-  "version": "2.0.15",
+  "version": "2.0.16",
   "type": "module",
   "description": "SvelteKit adapter for @donkeylabs/server - seamless SSR/browser API integration",
   "main": "./dist/index.js",
@@ -34,6 +34,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build",
     "typecheck": "bun --bun tsc --noEmit"
   },
   "peerDependencies": {

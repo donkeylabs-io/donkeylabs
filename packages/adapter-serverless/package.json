@@ -1,0 +1,37 @@
+{
+  "name": "@donkeylabs/adapter-serverless",
+  "version": "0.1.0",
+  "description": "Serverless adapter for @donkeylabs/server (Vercel, AWS Lambda)",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "dev": "tsc --watch",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@donkeylabs/server": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.131",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  },
+  "peerDependencies": {
+    "@vercel/node": ">=3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@vercel/node": {
+      "optional": true
+    }
+  }
+}

@@ -40,6 +40,9 @@ jobs:
       - name: Run tests
         run: cd packages/server && bun test
 
+      - name: Build packages
+        run: bun run build
+
       - name: Publish to npm
         run: npm run release
         env:

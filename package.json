@@ -5,6 +5,7 @@
     "packages/*"
   ],
   "scripts": {
+    "build": "cd packages/adapter-sveltekit && npm run build",
     "test": "bun test --filter='packages/*'",
     "typecheck": "bun --bun tsc --noEmit -p packages/server",
     "release": "npm publish --provenance --access public -w @donkeylabs/server || true && npm publish --provenance --access public -w @donkeylabs/cli || true && npm publish --provenance --access public -w @donkeylabs/adapter-sveltekit || true && npm publish --provenance --access public -w @donkeylabs/mcp || true",
