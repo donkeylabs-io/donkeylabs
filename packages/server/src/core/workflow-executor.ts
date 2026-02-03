@@ -44,10 +44,10 @@ async function main(): Promise<void> {
   const proxyConnection = new WorkflowProxyConnection(socket);
 
   // Create database connection + adapter (subprocess owns its own persistence)
+  const sqlite = new Database(dbPath);
+  sqlite.run("PRAGMA busy_timeout = 5000");
   const db = new Kysely<any>({
-    dialect: new BunSqliteDialect({
-      database: new Database(dbPath),
-    }),
+    dialect: new BunSqliteDialect({ database: sqlite }),
   });
   const adapter = new KyselyWorkflowAdapter(db, { cleanupDays: 0 });
 
@@ -76,10 +76,19 @@ async function main(): Promise<void> {
     const plugins = createPluginsProxy(proxyConnection);
     const coreServices = createCoreServicesProxy(proxyConnection);
 
+    // Wrap coreServices proxy so that `db` resolves locally instead of via IPC.
+    // Spreading a Proxy with no ownKeys trap loses all proxied properties.
+    const coreWithDb = new Proxy(coreServices, {
+      get(target, prop, receiver) {
+        if (prop === "db") return db;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
     // Create state machine with IPC event bridge
     const sm = new WorkflowStateMachine({
       adapter,
-      core: { ...coreServices, db } as any,
+      core: coreWithDb as any,
       plugins,
       events: createIpcEventBridge(socket, instanceId),
       pollInterval: 1000,

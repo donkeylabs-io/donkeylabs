@@ -12,9 +12,10 @@ import type { Events } from "./events";
 import type { Jobs } from "./jobs";
 import type { SSE } from "./sse";
 import type { z } from "zod";
+import { sql } from "kysely";
 import type { CoreServices } from "../core";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   createWorkflowSocketServer,
   type WorkflowSocketServer,
@@ -23,6 +24,31 @@ import {
 } from "./workflow-socket";
 import { isProcessAlive } from "./external-jobs";
 import { WorkflowStateMachine, type StateMachineEvents } from "./workflow-state-machine";
+
+// ============================================
+// Auto-detect caller module for isolated workflows
+// ============================================
+
+const WORKFLOWS_FILE = resolve(fileURLToPath(import.meta.url));
+
+/**
+ * Walk the call stack to find the file that invoked build().
+ * Returns a file:// URL string or undefined if detection fails.
+ */
+function captureCallerUrl(): string | undefined {
+  const stack = new Error().stack ?? "";
+  for (const line of stack.split("\n").slice(1)) {
+    const match = line.match(/at\s+(?:.*?\s+\(?)?([^\s():]+):\d+:\d+/);
+    if (match) {
+      let filePath = match[1];
+      if (filePath.startsWith("file://")) filePath = fileURLToPath(filePath);
+      if (filePath.startsWith("native")) continue;
+      filePath = resolve(filePath);
+      if (filePath !== WORKFLOWS_FILE) return pathToFileURL(filePath).href;
+    }
+  }
+  return undefined;
+}
 
 // Type helper for Zod schema inference
 type ZodSchema = z.ZodTypeAny;
@@ -144,6 +170,8 @@ export interface WorkflowDefinition {
    * Set to false for lightweight workflows that benefit from inline execution.
    */
   isolated?: boolean;
+  /** Auto-detected module URL where this workflow was built. Used as fallback for isolated execution. */
+  sourceModule?: string;
 }
 
 // ============================================
@@ -576,6 +604,7 @@ export class WorkflowBuilder {
       timeout: this._timeout,
       defaultRetry: this._defaultRetry,
       isolated: this._isolated,
+      sourceModule: captureCallerUrl(),
     };
   }
 }
@@ -617,10 +646,15 @@ export interface WorkflowsConfig {
 export interface WorkflowRegisterOptions {
   /**
    * Module path for isolated workflows.
-   * Required when workflow.isolated !== false and running in isolated mode.
-   * Use `import.meta.url` to get the current module's path.
+   * Auto-detected from the call site of `build()` in most cases.
+   * Only needed if the workflow definition is re-exported from a different
+   * module than the one that calls `build()`.
    *
    * @example
+   * // Usually not needed — auto-detected:
+   * workflows.register(myWorkflow);
+   *
+   * // Override when re-exporting from another module:
    * workflows.register(myWorkflow, { modulePath: import.meta.url });
    */
   modulePath?: string;
@@ -649,6 +683,8 @@ export interface Workflows {
   stop(): Promise<void>;
   /** Set core services (called after initialization to resolve circular dependency) */
   setCore(core: CoreServices): void;
+  /** Resolve dbPath from the database instance (call after setCore, before resume) */
+  resolveDbPath(): Promise<void>;
   /** Set plugin services (called after plugins are initialized) */
   setPlugins(plugins: Record<string, any>): void;
   /** Update metadata for a workflow instance (used by isolated workflows) */
@@ -728,19 +764,21 @@ class WorkflowsImpl implements Workflows {
 
   setCore(core: CoreServices): void {
     this.core = core;
-    // Extract DB path if using Kysely adapter (for isolated workflows)
-    if (!this.dbPath && (core.db as any)?.getExecutor) {
-      // Try to get the database path from the Kysely instance
-      // This is a bit hacky but necessary for isolated workflows
-      try {
-        const executor = (core.db as any).getExecutor();
-        const adapter = executor?.adapter;
-        if (adapter?.db?.filename) {
-          this.dbPath = adapter.db.filename;
-        }
-      } catch {
-        // Ignore - dbPath might be set manually
+  }
+
+  async resolveDbPath(): Promise<void> {
+    if (this.dbPath) return;
+    if (!this.core?.db) return;
+
+    // Use PRAGMA database_list to get the file path — works with any SQLite dialect
+    try {
+      const result = await sql<{ name: string; file: string }>`PRAGMA database_list`.execute(this.core.db);
+      const main = result.rows.find((r) => r.name === "main");
+      if (main?.file && main.file !== "" && main.file !== ":memory:") {
+        this.dbPath = main.file;
       }
+    } catch {
+      // Not a SQLite database or PRAGMA not supported — dbPath stays unset
     }
   }
 
@@ -761,14 +799,15 @@ class WorkflowsImpl implements Workflows {
       throw new Error(`Workflow "${definition.name}" is already registered`);
     }
 
-    // Store module path for isolated workflows
-    if (options?.modulePath) {
-      this.workflowModulePaths.set(definition.name, options.modulePath);
+    // Resolve module path: explicit option > auto-detected sourceModule
+    const modulePath = options?.modulePath ?? definition.sourceModule;
+    if (modulePath) {
+      this.workflowModulePaths.set(definition.name, modulePath);
     } else if (definition.isolated !== false) {
-      // Warn if isolated workflow has no module path
+      // Warn only if neither explicit nor auto-detected path is available
       console.warn(
-        `[Workflows] Workflow "${definition.name}" is isolated but no modulePath provided. ` +
-        `Use: workflows.register(myWorkflow, { modulePath: import.meta.url })`
+        `[Workflows] Workflow "${definition.name}" is isolated but no modulePath could be detected. ` +
+        `Pass { modulePath: import.meta.url } to register().`
       );
     }
 
@@ -822,6 +861,11 @@ class WorkflowsImpl implements Workflows {
       if (isIsolated && !modulePath) {
         console.warn(
           `[Workflows] Workflow "${workflowName}" falling back to inline execution (no modulePath)`
+        );
+      } else if (isIsolated && modulePath && !this.dbPath) {
+        console.warn(
+          `[Workflows] Workflow "${workflowName}" falling back to inline execution (dbPath could not be auto-detected). ` +
+            `Set workflows.dbPath in your server config to enable isolated execution.`
         );
       }
       this.startInlineWorkflow(instance.id, definition);

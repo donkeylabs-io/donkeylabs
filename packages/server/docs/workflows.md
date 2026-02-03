@@ -79,10 +79,8 @@ const orderWorkflow = workflow("process-order")
 ### 2. Register and Start
 
 ```typescript
-// Register the workflow (modulePath required for isolated/subprocess execution)
-ctx.core.workflows.register(orderWorkflow, {
-  modulePath: import.meta.url,
-});
+// Register the workflow — modulePath is auto-detected from build()
+ctx.core.workflows.register(orderWorkflow);
 
 // Start an instance
 const instanceId = await ctx.core.workflows.start("process-order", {
@@ -483,13 +481,11 @@ const myWorkflow = workflow("heavy-processing")
   })
   .build();
 
-// Must provide modulePath so the subprocess can import the workflow definition
-ctx.core.workflows.register(myWorkflow, {
-  modulePath: import.meta.url,
-});
+// Just register — modulePath is auto-detected from build()
+ctx.core.workflows.register(myWorkflow);
 ```
 
-The `modulePath` option is **required** for isolated workflows. It tells the subprocess where to find the workflow definition module.
+> **Advanced:** The module path is captured automatically when you call `.build()`. If you re-export a workflow definition from a different module, pass `{ modulePath: import.meta.url }` explicitly so the subprocess can find the definition.
 
 ### Inline Mode
 
@@ -518,7 +514,7 @@ ctx.core.workflows.register(quickWorkflow);
 | Event loop | Separate process, won't block server | Runs on main thread |
 | Plugin access | Via IPC proxy | Direct access |
 | Best for | Long-running, CPU-intensive workflows | Quick validations, lightweight flows |
-| Requires | `modulePath` at registration | Nothing extra |
+| Setup | `workflows.register(wf)` | `workflows.register(wf)` |
 
 ## API Reference
 
@@ -554,8 +550,8 @@ interface Workflows {
 interface WorkflowRegisterOptions {
   /**
    * Module path for isolated workflows.
-   * Required when the workflow runs in isolated mode (the default).
-   * Typically: import.meta.url
+   * Auto-detected from build() in most cases.
+   * Only needed when re-exporting from a different module.
    */
   modulePath?: string;
 }
@@ -653,7 +649,6 @@ Workflows automatically resume after server restart:
 For this to work properly:
 - Use a persistent adapter (not in-memory) in production
 - Step handlers should be idempotent when possible (a step may re-execute after a crash)
-- For isolated workflows, ensure `modulePath` was provided at registration
 
 ## Complete Example
 
@@ -741,10 +736,8 @@ const onboardingWorkflow = workflow("user-onboarding")
 // Setup server
 const server = new AppServer({ db: createDatabase() });
 
-// Register workflow (modulePath required for isolated execution)
-server.getCore().workflows.register(onboardingWorkflow, {
-  modulePath: import.meta.url,
-});
+// Register workflow — modulePath auto-detected from build()
+server.getCore().workflows.register(onboardingWorkflow);
 
 // Start workflow from a route
 router.route("onboard").typed({

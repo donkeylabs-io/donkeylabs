@@ -412,6 +412,62 @@ describe("WorkflowDefinition", () => {
     expect(isolatedWf.isolated).toBe(true);
     expect(inlineWf.isolated).toBe(false);
   });
+
+  it("should auto-detect sourceModule as a valid file:// URL after build()", () => {
+    const wf = workflow("auto-detect")
+      .task("s", { handler: async () => 1 })
+      .build();
+
+    expect(wf.sourceModule).toBeDefined();
+    expect(wf.sourceModule).toMatch(/^file:\/\//);
+    // Should point to this test file
+    expect(wf.sourceModule).toContain("workflows.test.ts");
+  });
+});
+
+describe("register() with auto-detected sourceModule", () => {
+  let workflows: ReturnType<typeof createWorkflows>;
+  let adapter: MemoryWorkflowAdapter;
+
+  beforeEach(() => {
+    adapter = new MemoryWorkflowAdapter();
+    workflows = createWorkflows({ adapter });
+  });
+
+  afterEach(async () => {
+    await workflows.stop();
+  });
+
+  it("should not warn when registering isolated workflow with auto-detected sourceModule", () => {
+    const wf = workflow("auto-isolated")
+      .task("s", { handler: async () => 1 })
+      .build();
+
+    // sourceModule should be set by build()
+    expect(wf.sourceModule).toBeDefined();
+
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: any[]) => warnings.push(args.join(" "));
+    try {
+      workflows.register(wf);
+    } finally {
+      console.warn = origWarn;
+    }
+
+    expect(warnings.filter((w) => w.includes("no modulePath"))).toHaveLength(0);
+  });
+
+  it("should prefer explicit modulePath over auto-detected sourceModule", () => {
+    const wf = workflow("explicit-path")
+      .task("s", { handler: async () => 1 })
+      .build();
+
+    // Register with explicit modulePath
+    expect(() => {
+      workflows.register(wf, { modulePath: "file:///explicit/path.ts" });
+    }).not.toThrow();
+  });
 });
 
 describe("Choice steps (inline)", () => {
