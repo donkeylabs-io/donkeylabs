@@ -18,6 +18,8 @@ const { positionals, values } = parseArgs({
     version: { type: "boolean", short: "v" },
     type: { type: "string", short: "t" },
     local: { type: "boolean", short: "l" },
+    list: { type: "boolean" },
+    output: { type: "string", short: "o" },
   },
   allowPositionals: true,
 });
@@ -37,6 +39,7 @@ ${pc.bold("Commands:")}
   ${pc.cyan("add")}               Add optional plugins (images, auth, etc.)
   ${pc.cyan("generate")}          Generate types (registry, context, client)
   ${pc.cyan("plugin")}            Plugin management
+  ${pc.cyan("docs")}              Sync documentation from installed package
   ${pc.cyan("deploy")} <platform> Deploy (vercel, cloudflare, aws, vps)
   ${pc.cyan("deploy history")}     Show deployment history
   ${pc.cyan("deploy rollback")}    Rollback to version
@@ -57,6 +60,9 @@ ${pc.bold("Options:")}
    donkeylabs init --type sveltekit # SvelteKit + adapter project
    donkeylabs generate
    donkeylabs plugin create myPlugin
+   donkeylabs docs                  # Sync all docs to ./docs/donkeylabs/
+   donkeylabs docs --list           # List available docs
+   donkeylabs docs workflows        # Sync specific doc
    donkeylabs deploy vercel         # Deploy to Vercel
    donkeylabs config                # Interactive configuration
    donkeylabs config set DATABASE_URL postgresql://...
@@ -111,6 +117,11 @@ async function main() {
     case "mcp":
       const { mcpCommand } = await import("./commands/mcp");
       await mcpCommand(positionals.slice(1));
+      break;
+
+    case "docs":
+      const { docsCommand } = await import("./commands/docs");
+      await docsCommand(positionals.slice(1), { list: values.list, output: values.output });
       break;
 
     case "deploy":
