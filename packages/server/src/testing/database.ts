@@ -72,6 +72,7 @@ export async function createTestDatabase(options: TestDatabaseOptions): Promise<
       }
 
       // Dynamic import - pg is optional peer dependency
+      // @ts-ignore - pg may not be installed
       const { Pool: PGPool } = await import("pg");
 
       db = new Kysely({
@@ -92,6 +93,7 @@ export async function createTestDatabase(options: TestDatabaseOptions): Promise<
       }
 
       // Dynamic import - mysql2 is optional peer dependency
+      // @ts-ignore - mysql2 may not be installed
       const { createPool: createMySQLPool } = await import("mysql2");
 
       db = new Kysely({

@@ -91,7 +91,7 @@ export interface E2EFixtures {
   db: any;
   
   /** Helper to seed test data */
-  seed: (data: { users?: any[]; [key: string]: any[] }) => Promise<void>;
+  seed: (data: { users?: any[]; [key: string]: any[] | undefined }) => Promise<void>;
   
   /** Helper to cleanup test data */
   cleanup: () => Promise<void>;
@@ -245,6 +245,7 @@ export function createE2EFixtures(baseURL: string) {
       await use(async (data) => {
         // Seed data via API
         for (const [table, items] of Object.entries(data)) {
+          if (!items) continue;
           for (const item of items) {
             await fetch(`${baseURL}/${table}.create`, {
               method: "POST",
