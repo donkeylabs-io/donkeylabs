@@ -769,18 +769,11 @@ export async function generateCommand(_args: string[]): Promise<void> {
 
   // Generate client using adapter (required for SvelteKit projects)
   if (config.adapter) {
-    // Resolve the adapter path from the project's node_modules
-    const adapterPath = join(process.cwd(), "node_modules", config.adapter, "src/generator/index.ts");
-
-    if (!existsSync(adapterPath)) {
-      console.error(pc.red(`Adapter not found: ${config.adapter}`));
-      console.error(pc.dim(`Expected path: ${adapterPath}`));
-      console.error(pc.dim(`Run: bun install`));
-      process.exit(1);
-    }
+    // Use the package's subpath export (e.g., @donkeylabs/adapter-sveltekit/generator)
+    const adapterGeneratorPath = `${config.adapter}/generator`;
 
     try {
-      const adapterModule = await import(adapterPath);
+      const adapterModule = await import(adapterGeneratorPath);
       if (!adapterModule.generateClient) {
         console.error(pc.red(`Adapter ${config.adapter} does not export generateClient`));
         process.exit(1);
@@ -788,9 +781,14 @@ export async function generateCommand(_args: string[]): Promise<void> {
       await adapterModule.generateClient(config, serverRoutes, clientOutput);
       generated.push(`client (${config.adapter})`);
     } catch (e: any) {
-      console.error(pc.red(`Failed to run adapter generator: ${config.adapter}`));
-      console.error(pc.dim(e.message));
-      if (e.stack) console.error(pc.dim(e.stack));
+      if (e.code === 'ERR_MODULE_NOT_FOUND' || e.message?.includes('Cannot find')) {
+        console.error(pc.red(`Adapter not found: ${config.adapter}`));
+        console.error(pc.dim(`Make sure the adapter is installed: bun add ${config.adapter}`));
+      } else {
+        console.error(pc.red(`Failed to run adapter generator: ${config.adapter}`));
+        console.error(pc.dim(e.message));
+        if (e.stack) console.error(pc.dim(e.stack));
+      }
       process.exit(1);
     }
   } else {
