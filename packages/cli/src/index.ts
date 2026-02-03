@@ -20,6 +20,9 @@ const { positionals, values } = parseArgs({
     local: { type: "boolean", short: "l" },
     list: { type: "boolean" },
     output: { type: "string", short: "o" },
+    all: { type: "boolean", short: "a" },
+    check: { type: "boolean", short: "c" },
+    "skip-docs": { type: "boolean" },
   },
   allowPositionals: true,
 });
@@ -39,6 +42,7 @@ ${pc.bold("Commands:")}
   ${pc.cyan("add")}               Add optional plugins (images, auth, etc.)
   ${pc.cyan("generate")}          Generate types (registry, context, client)
   ${pc.cyan("plugin")}            Plugin management
+  ${pc.cyan("update")}            Check and install package updates
   ${pc.cyan("docs")}              Sync documentation from installed package
   ${pc.cyan("deploy")} <platform> Deploy (vercel, cloudflare, aws, vps)
   ${pc.cyan("deploy history")}     Show deployment history
@@ -60,9 +64,11 @@ ${pc.bold("Options:")}
    donkeylabs init --type sveltekit # SvelteKit + adapter project
    donkeylabs generate
    donkeylabs plugin create myPlugin
+   donkeylabs update                # Interactive package update
+   donkeylabs update --check        # Check for updates only
+   donkeylabs update --all          # Update all packages
    donkeylabs docs                  # Sync all docs to ./docs/donkeylabs/
    donkeylabs docs --list           # List available docs
-   donkeylabs docs workflows        # Sync specific doc
    donkeylabs deploy vercel         # Deploy to Vercel
    donkeylabs config                # Interactive configuration
    donkeylabs config set DATABASE_URL postgresql://...
@@ -122,6 +128,15 @@ async function main() {
     case "docs":
       const { docsCommand } = await import("./commands/docs");
       await docsCommand(positionals.slice(1), { list: values.list, output: values.output });
+      break;
+
+    case "update":
+      const { updateCommand } = await import("./commands/update");
+      await updateCommand(positionals.slice(1), {
+        all: values.all,
+        check: values.check,
+        skipDocs: values["skip-docs"],
+      });
       break;
 
     case "deploy":
