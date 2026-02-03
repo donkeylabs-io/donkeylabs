@@ -177,25 +177,26 @@ export default defineConfig({
     const result = await callTool("add_migration", {
       pluginName: "auth",
       migrationName: "create_users",
-      upSql: `CREATE TABLE users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  email TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);`,
-      downSql: "DROP TABLE IF EXISTS users;",
+      upCode: `await db.schema.createTable("users")
+    .addColumn("id", "integer", (col) => col.primaryKey().autoIncrement())
+    .addColumn("email", "text", (col) => col.notNull().unique())
+    .addColumn("password_hash", "text", (col) => col.notNull())
+    .addColumn("created_at", "text", (col) => col.defaultTo(sql\`CURRENT_TIMESTAMP\`))
+    .execute();`,
+      downCode: `await db.schema.dropTable("users").execute();`,
     });
 
     expect(result).toContain("Migration Created");
     expect(result).toContain("create_users");
 
     // Verify migration file (now .ts Kysely format)
-    const migrationPath = join(TEST_PROJECT_DIR, "src/plugins/auth/migrations/002_create_users.ts");
+    // First migration for the plugin is 001 (not 002), since create_plugin doesn't create an initial migration
+    const migrationPath = join(TEST_PROJECT_DIR, "src/plugins/auth/migrations/001_create_users.ts");
     expect(existsSync(migrationPath)).toBe(true);
 
     const content = readFileSync(migrationPath, "utf-8");
-    expect(content).toContain("CREATE TABLE users");
-    expect(content).toContain("email TEXT NOT NULL UNIQUE");
+    expect(content).toContain('createTable("users")');
+    expect(content).toContain(".notNull().unique()");
   });
 
   test("Phase 3.3: Agent adds service methods to auth plugin", async () => {
@@ -274,23 +275,23 @@ export default defineConfig({
       "utf-8"
     );
     expect(pluginContent).toContain("dependencies:");
-    expect(pluginContent).toContain("authPlugin");
+    expect(pluginContent).toContain('"auth"');
   });
 
   test("Phase 4.2: Agent adds tasks table migration", async () => {
     const result = await callTool("add_migration", {
       pluginName: "tasks",
       migrationName: "create_tasks",
-      upSql: `CREATE TABLE tasks (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL REFERENCES users(id),
-  title TEXT NOT NULL,
-  description TEXT,
-  completed INTEGER DEFAULT 0,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX idx_tasks_user ON tasks(user_id);`,
-      downSql: "DROP TABLE IF EXISTS tasks;",
+      upCode: `await db.schema.createTable("tasks")
+    .addColumn("id", "integer", (col) => col.primaryKey().autoIncrement())
+    .addColumn("user_id", "integer", (col) => col.notNull().references("users.id"))
+    .addColumn("title", "text", (col) => col.notNull())
+    .addColumn("description", "text")
+    .addColumn("completed", "integer", (col) => col.defaultTo(0))
+    .addColumn("created_at", "text", (col) => col.defaultTo(sql\`CURRENT_TIMESTAMP\`))
+    .execute();
+  await db.schema.createIndex("idx_tasks_user").on("tasks").column("user_id").execute();`,
+      downCode: `await db.schema.dropTable("tasks").execute();`,
     });
 
     expect(result).toContain("Migration Created");
@@ -494,11 +495,9 @@ CREATE INDEX idx_tasks_user ON tasks(user_id);`,
       "utf-8"
     );
 
-    // Should import dependency
-    expect(pluginContent).toContain('import { authPlugin } from "../auth"');
-
-    // Should declare dependency
+    // Should declare dependency (using string array, not import)
     expect(pluginContent).toContain("dependencies:");
+    expect(pluginContent).toContain('"auth"');
 
     // Should have init hook with cron and jobs
     expect(pluginContent).toContain("init:");
@@ -560,13 +559,12 @@ CREATE INDEX idx_tasks_user ON tasks(user_id);`,
     const authMigrations = join(TEST_PROJECT_DIR, "src/plugins/auth/migrations");
     const tasksMigrations = join(TEST_PROJECT_DIR, "src/plugins/tasks/migrations");
 
-    // Auth should have 001 and 002 (now .ts Kysely format)
-    expect(existsSync(join(authMigrations, "001_initial.ts"))).toBe(true);
-    expect(existsSync(join(authMigrations, "002_create_users.ts"))).toBe(true);
+    // Auth has 001_create_users.ts (first migration added via add_migration)
+    // Note: create_plugin doesn't create an initial migration, numbering starts at 001
+    expect(existsSync(join(authMigrations, "001_create_users.ts"))).toBe(true);
 
-    // Tasks should have 001 and 002
-    expect(existsSync(join(tasksMigrations, "001_initial.ts"))).toBe(true);
-    expect(existsSync(join(tasksMigrations, "002_create_tasks.ts"))).toBe(true);
+    // Tasks has 001_create_tasks.ts (first migration added via add_migration)
+    expect(existsSync(join(tasksMigrations, "001_create_tasks.ts"))).toBe(true);
   });
 
   test("Phase 7.6: Validate directory structure matches conventions", async () => {

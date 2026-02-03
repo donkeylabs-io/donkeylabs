@@ -10,7 +10,7 @@ import type { Cron } from "./core/cron";
 import type { Jobs } from "./core/jobs";
 import type { SSE } from "./core/sse";
 import type { RateLimiter } from "./core/rate-limiter";
-import type { Errors, CustomErrorRegistry } from "./core/errors";
+import type { Errors, CustomErrorRegistry, ErrorFactory } from "./core/errors";
 import type { Workflows } from "./core/workflows";
 import type { Processes } from "./core/processes";
 import type { Audit } from "./core/audit";
@@ -408,7 +408,7 @@ export type InferEvents<T> = UnwrapPluginFactory<T> extends { events?: infer E }
 export type InferClientConfig<T> = UnwrapPluginFactory<T> extends { client?: infer C } ? C : undefined;
 export type InferCustomErrors<T> = UnwrapPluginFactory<T> extends { customErrors?: infer E } ? E : {};
 
-export type { ExtractServices, ExtractSchemas };
+export type { ExtractServices, ExtractSchemas, ErrorFactory };
 
 export type Plugin = {
     name: string;
@@ -494,10 +494,21 @@ export class PluginManager {
    * Records that a migration has been applied for a specific plugin.
    */
   private async recordMigration(pluginName: string, migrationName: string): Promise<void> {
-    await sql`
-      INSERT INTO __donkeylabs_migrations__ (plugin_name, migration_name)
-      VALUES (${pluginName}, ${migrationName})
-    `.execute(this.core.db);
+    try {
+      // Use ON CONFLICT DO NOTHING to handle race conditions on hot reload
+      await sql`
+        INSERT INTO __donkeylabs_migrations__ (plugin_name, migration_name)
+        VALUES (${pluginName}, ${migrationName})
+        ON CONFLICT (plugin_name, migration_name) DO NOTHING
+      `.execute(this.core.db);
+    } catch (e: any) {
+      // Fallback: ignore UNIQUE constraint errors (migration already recorded)
+      if (e?.code === "SQLITE_CONSTRAINT_UNIQUE" || e?.message?.includes("UNIQUE constraint failed")) {
+        // Already recorded, ignore
+        return;
+      }
+      throw e;
+    }
   }
 
   /**

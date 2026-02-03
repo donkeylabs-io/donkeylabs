@@ -35,8 +35,16 @@ export interface Cron {
 // Supports: * (any), specific values, ranges (1-5), steps (*/5)
 // Format: second minute hour dayOfMonth month dayOfWeek
 // Also supports 5-field format (minute hour dayOfMonth month dayOfWeek)
+//
+// Day-of-month/day-of-week semantics:
+// - Standard cron uses OR semantics when both are restricted (not *)
+// - If BOTH day-of-month and day-of-week are explicitly set, job runs if EITHER matches
+// - If one is *, the other is used exclusively
 class CronExpression {
   private fields: [number[], number[], number[], number[], number[], number[]];
+  // Track if day fields were explicitly set (not *)
+  private dayOfMonthRestricted: boolean;
+  private dayOfWeekRestricted: boolean;
 
   constructor(expression: string) {
     const parts = expression.trim().split(/\s+/);
@@ -44,6 +52,8 @@ class CronExpression {
     // Support both 5-field and 6-field cron
     if (parts.length === 5) {
       // minute hour dayOfMonth month dayOfWeek
+      this.dayOfMonthRestricted = parts[2] !== "*";
+      this.dayOfWeekRestricted = parts[4] !== "*";
       this.fields = [
         [0], // seconds (always 0)
         this.parseField(parts[0]!, 0, 59),  // minutes
@@ -54,6 +64,8 @@ class CronExpression {
       ];
     } else if (parts.length === 6) {
       // second minute hour dayOfMonth month dayOfWeek
+      this.dayOfMonthRestricted = parts[3] !== "*";
+      this.dayOfWeekRestricted = parts[5] !== "*";
       this.fields = [
         this.parseField(parts[0]!, 0, 59),  // seconds
         this.parseField(parts[1]!, 0, 59),  // minutes
@@ -99,14 +111,25 @@ class CronExpression {
     const month = date.getMonth() + 1;
     const dayOfWeek = date.getDay();
 
-    return (
-      this.fields[0].includes(second) &&
-      this.fields[1].includes(minute) &&
-      this.fields[2].includes(hour) &&
-      this.fields[3].includes(dayOfMonth) &&
-      this.fields[4].includes(month) &&
-      this.fields[5].includes(dayOfWeek)
-    );
+    // Check time fields (always AND)
+    if (!this.fields[0].includes(second)) return false;
+    if (!this.fields[1].includes(minute)) return false;
+    if (!this.fields[2].includes(hour)) return false;
+    if (!this.fields[4].includes(month)) return false;
+
+    // Day matching uses standard cron semantics:
+    // - If both day-of-month AND day-of-week are restricted (not *), use OR
+    // - Otherwise, use AND (one or both are unrestricted)
+    const domMatches = this.fields[3].includes(dayOfMonth);
+    const dowMatches = this.fields[5].includes(dayOfWeek);
+
+    if (this.dayOfMonthRestricted && this.dayOfWeekRestricted) {
+      // Both restricted: OR semantics - job runs if EITHER matches
+      return domMatches || dowMatches;
+    } else {
+      // One or both unrestricted: AND semantics
+      return domMatches && dowMatches;
+    }
   }
 
   /**
@@ -150,9 +173,21 @@ class CronExpression {
           if (dayOfMonth > daysInMonth) continue; // Skip invalid days for this month
 
           // Check if this day matches day-of-week constraint
+          // Use OR semantics if both are restricted, AND otherwise
           const testDate = new Date(next.getFullYear(), targetMonth, dayOfMonth);
           const dayOfWeek = testDate.getDay();
-          if (!daysOfWeek.includes(dayOfWeek)) continue;
+          const domMatches = daysOfMonth.includes(dayOfMonth);
+          const dowMatches = daysOfWeek.includes(dayOfWeek);
+
+          let dayMatches: boolean;
+          if (this.dayOfMonthRestricted && this.dayOfWeekRestricted) {
+            // Both restricted: OR semantics
+            dayMatches = domMatches || dowMatches;
+          } else {
+            // One or both unrestricted: AND semantics
+            dayMatches = domMatches && dowMatches;
+          }
+          if (!dayMatches) continue;
 
           // Skip days in the past
           if (testDate < new Date(from.getFullYear(), from.getMonth(), from.getDate())) continue;
@@ -308,6 +343,9 @@ class CronImpl implements Cron {
     if (this.running) return;
     this.running = true;
 
+    // Catch-up check for missed runs since last shutdown
+    this.catchUpMissedRuns();
+
     // Check every second
     this.timer = setInterval(() => {
       const now = new Date();
@@ -327,6 +365,49 @@ class CronImpl implements Cron {
         }
       }
     }, 1000);
+  }
+
+  /**
+   * Catch up on missed runs since last shutdown.
+   * For each task with a lastRun timestamp, execute any runs that were missed.
+   * Limited to 10 catch-up runs per task to avoid flooding.
+   */
+  private catchUpMissedRuns(): void {
+    const now = new Date();
+    const maxCatchUp = 10;
+
+    for (const task of this.tasks.values()) {
+      if (!task.enabled || !task.lastRun) continue;
+
+      try {
+        const cronExpr = new CronExpression(task.expression);
+        let missedRun = cronExpr.getNextRun(task.lastRun);
+        let catchUpCount = 0;
+
+        // Execute any missed runs (up to limit to avoid flooding)
+        while (missedRun && missedRun < now && catchUpCount < maxCatchUp) {
+          console.log(`[Cron] Catching up missed run for "${task.name}" at ${missedRun.toISOString()}`);
+
+          // Execute the handler asynchronously
+          Promise.resolve(task.handler()).catch(err => {
+            console.error(`[Cron] Catch-up task "${task.name}" failed:`, err);
+          });
+
+          task.lastRun = missedRun;
+          missedRun = cronExpr.getNextRun(missedRun);
+          catchUpCount++;
+        }
+
+        // Update nextRun to the next scheduled time
+        task.nextRun = cronExpr.getNextRun(now);
+
+        if (catchUpCount > 0) {
+          console.log(`[Cron] Caught up ${catchUpCount} missed runs for "${task.name}"`);
+        }
+      } catch (err) {
+        console.error(`[Cron] Error catching up task "${task.name}":`, err);
+      }
+    }
   }
 
   async stop(): Promise<void> {

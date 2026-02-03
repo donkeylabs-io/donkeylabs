@@ -397,6 +397,159 @@ export function createAdminRouter(config: AdminRouteContext) {
     })
   );
 
+  // Workflows get route - full instance details with step results
+  router.route("workflows.get").typed(
+    defineRoute({
+      input: z.object({ instanceId: z.string() }),
+      output: z.object({
+        id: z.string(),
+        workflowName: z.string(),
+        status: z.string(),
+        currentStep: z.string().nullable(),
+        input: z.any(),
+        output: z.any().nullable(),
+        error: z.string().nullable(),
+        stepResults: z.record(
+          z.object({
+            stepName: z.string(),
+            status: z.string(),
+            input: z.any().optional(),
+            output: z.any().optional(),
+            error: z.string().optional(),
+            startedAt: z.string().nullable(),
+            completedAt: z.string().nullable(),
+            attempts: z.number(),
+          })
+        ),
+        metadata: z.record(z.any()).nullable(),
+        createdAt: z.string(),
+        startedAt: z.string().nullable(),
+        completedAt: z.string().nullable(),
+        parentId: z.string().nullable(),
+        branchName: z.string().nullable(),
+      }).nullable(),
+      handle: async (input, ctx) => {
+        if (!checkAuth(ctx)) {
+          throw ctx.errors.Forbidden("Unauthorized");
+        }
+        const instance = await ctx.core.workflows.getInstance(input.instanceId);
+        if (!instance) {
+          return null;
+        }
+
+        // Transform step results with proper date serialization
+        const stepResults: Record<string, any> = {};
+        for (const [key, result] of Object.entries(instance.stepResults)) {
+          stepResults[key] = {
+            stepName: result.stepName,
+            status: result.status,
+            input: result.input,
+            output: result.output,
+            error: result.error,
+            startedAt: result.startedAt?.toISOString() ?? null,
+            completedAt: result.completedAt?.toISOString() ?? null,
+            attempts: result.attempts,
+          };
+        }
+
+        return {
+          id: instance.id,
+          workflowName: instance.workflowName,
+          status: instance.status,
+          currentStep: instance.currentStep ?? null,
+          input: instance.input,
+          output: instance.output ?? null,
+          error: instance.error ?? null,
+          stepResults,
+          metadata: instance.metadata ?? null,
+          createdAt: instance.createdAt.toISOString(),
+          startedAt: instance.startedAt?.toISOString() ?? null,
+          completedAt: instance.completedAt?.toISOString() ?? null,
+          parentId: instance.parentId ?? null,
+          branchName: instance.branchName ?? null,
+        };
+      },
+    })
+  );
+
+  // Workflows subscribe route - SSE for real-time workflow events
+  // Subscribes to workflow:{instanceId} channel for progress, completed, and failed events
+  router.route("workflows.subscribe").sse({
+    input: z.object({
+      instanceId: z.string(),
+    }),
+    events: {
+      progress: z.object({
+        progress: z.number(),
+        currentStep: z.string().optional(),
+        completedSteps: z.number(),
+        totalSteps: z.number(),
+      }),
+      "step.started": z.object({
+        stepName: z.string(),
+      }),
+      "step.completed": z.object({
+        stepName: z.string(),
+        output: z.any().optional(),
+      }),
+      "step.failed": z.object({
+        stepName: z.string(),
+        error: z.string(),
+      }),
+      completed: z.object({
+        output: z.any().optional(),
+      }),
+      failed: z.object({
+        error: z.string(),
+      }),
+    },
+    handle: (input, ctx) => {
+      if (!checkAuth(ctx)) {
+        return [];
+      }
+      // Subscribe to the workflow-specific channel
+      return [`workflow:${input.instanceId}`];
+    },
+  });
+
+  // Workflows subscribe all route - SSE for all workflow events (useful for dashboard)
+  // Subscribes to workflow:* pattern for all workflow updates
+  router.route("workflows.subscribeAll").sse({
+    input: z.object({
+      // Optional filter by workflow name
+      workflowName: z.string().optional(),
+    }),
+    events: {
+      "workflow.started": z.object({
+        instanceId: z.string(),
+        workflowName: z.string(),
+      }),
+      "workflow.progress": z.object({
+        instanceId: z.string(),
+        workflowName: z.string(),
+        progress: z.number(),
+        currentStep: z.string().optional(),
+      }),
+      "workflow.completed": z.object({
+        instanceId: z.string(),
+        workflowName: z.string(),
+      }),
+      "workflow.failed": z.object({
+        instanceId: z.string(),
+        workflowName: z.string(),
+        error: z.string(),
+      }),
+    },
+    handle: (input, ctx) => {
+      if (!checkAuth(ctx)) {
+        return [];
+      }
+      // Subscribe to the global workflow events channel
+      // Events are emitted via ctx.core.events and need to be bridged to SSE
+      return ["workflows:all"];
+    },
+  });
+
   // Audit list route
   router.route("audit.list").typed(
     defineRoute({

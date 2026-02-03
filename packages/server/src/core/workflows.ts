@@ -6,12 +6,22 @@
 // - parallel: Run multiple branches concurrently
 // - choice: Conditional branching
 // - pass: Transform data / no-op
+// - isolated: Execute in subprocess to prevent event loop blocking (default)
 
 import type { Events } from "./events";
 import type { Jobs } from "./jobs";
 import type { SSE } from "./sse";
 import type { z } from "zod";
 import type { CoreServices } from "../core";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  createWorkflowSocketServer,
+  type WorkflowSocketServer,
+  type WorkflowEvent,
+  type ProxyRequest,
+} from "./workflow-socket";
+import { isProcessAlive } from "./external-jobs";
 
 // Type helper for Zod schema inference
 type ZodSchema = z.ZodTypeAny;
@@ -126,6 +136,13 @@ export interface WorkflowDefinition {
   timeout?: number;
   /** Default retry config for all steps */
   defaultRetry?: RetryConfig;
+  /**
+   * Whether to execute this workflow in an isolated subprocess.
+   * Default: true (isolated by default to prevent blocking the event loop)
+   *
+   * Set to false for lightweight workflows that benefit from inline execution.
+   */
+  isolated?: boolean;
 }
 
 // ============================================
@@ -334,9 +351,27 @@ export class WorkflowBuilder {
   private _timeout?: number;
   private _defaultRetry?: RetryConfig;
   private _lastStep?: string;
+  private _isolated = true; // Default to isolated execution
 
   constructor(name: string) {
     this._name = name;
+  }
+
+  /**
+   * Set whether to execute this workflow in an isolated subprocess.
+   * Default: true (isolated by default to prevent blocking the event loop)
+   *
+   * @param enabled - Set to false for lightweight workflows that benefit from inline execution
+   * @example
+   * // Heavy workflow - uses default isolation (no call needed)
+   * workflow("data-ingestion").task("process", { ... }).build();
+   *
+   * // Lightweight workflow - opt out of isolation
+   * workflow("quick-validation").isolated(false).task("validate", { ... }).build();
+   */
+  isolated(enabled: boolean = true): this {
+    this._isolated = enabled;
+    return this;
   }
 
   /** Set the starting step explicitly */
@@ -539,6 +574,7 @@ export class WorkflowBuilder {
       startAt: this._startAt,
       timeout: this._timeout,
       defaultRetry: this._defaultRetry,
+      isolated: this._isolated,
     };
   }
 }
@@ -566,11 +602,36 @@ export interface WorkflowsConfig {
   pollInterval?: number;
   /** Core services to pass to step handlers */
   core?: CoreServices;
+  /** Directory for Unix sockets (default: /tmp/donkeylabs-workflows) */
+  socketDir?: string;
+  /** TCP port range for Windows fallback (default: [49152, 65535]) */
+  tcpPortRange?: [number, number];
+  /** Database file path (required for isolated workflows) */
+  dbPath?: string;
+  /** Heartbeat timeout in ms (default: 60000) */
+  heartbeatTimeout?: number;
+}
+
+/** Options for registering a workflow */
+export interface WorkflowRegisterOptions {
+  /**
+   * Module path for isolated workflows.
+   * Required when workflow.isolated !== false and running in isolated mode.
+   * Use `import.meta.url` to get the current module's path.
+   *
+   * @example
+   * workflows.register(myWorkflow, { modulePath: import.meta.url });
+   */
+  modulePath?: string;
 }
 
 export interface Workflows {
-  /** Register a workflow definition */
-  register(definition: WorkflowDefinition): void;
+  /**
+   * Register a workflow definition.
+   * @param definition - The workflow definition to register
+   * @param options - Registration options (modulePath required for isolated workflows)
+   */
+  register(definition: WorkflowDefinition, options?: WorkflowRegisterOptions): void;
   /** Start a new workflow instance */
   start<T = any>(workflowName: string, input: T): Promise<string>;
   /** Get a workflow instance by ID */
@@ -589,11 +650,20 @@ export interface Workflows {
   setCore(core: CoreServices): void;
   /** Set plugin services (called after plugins are initialized) */
   setPlugins(plugins: Record<string, any>): void;
+  /** Update metadata for a workflow instance (used by isolated workflows) */
+  updateMetadata(instanceId: string, key: string, value: any): Promise<void>;
 }
 
 // ============================================
 // Workflow Service Implementation
 // ============================================
+
+interface IsolatedProcessInfo {
+  pid: number;
+  timeout?: ReturnType<typeof setTimeout>;
+  heartbeatTimeout?: ReturnType<typeof setTimeout>;
+  lastHeartbeat: number;
+}
 
 class WorkflowsImpl implements Workflows {
   private adapter: WorkflowAdapter;
@@ -606,6 +676,15 @@ class WorkflowsImpl implements Workflows {
   private running = new Map<string, { timeout?: ReturnType<typeof setTimeout> }>();
   private pollInterval: number;
 
+  // Isolated execution state
+  private socketServer?: WorkflowSocketServer;
+  private socketDir: string;
+  private tcpPortRange: [number, number];
+  private dbPath?: string;
+  private heartbeatTimeoutMs: number;
+  private workflowModulePaths = new Map<string, string>();
+  private isolatedProcesses = new Map<string, IsolatedProcessInfo>();
+
   constructor(config: WorkflowsConfig = {}) {
     this.adapter = config.adapter ?? new MemoryWorkflowAdapter();
     this.events = config.events;
@@ -613,20 +692,97 @@ class WorkflowsImpl implements Workflows {
     this.sse = config.sse;
     this.core = config.core;
     this.pollInterval = config.pollInterval ?? 1000;
+
+    // Isolated execution config
+    this.socketDir = config.socketDir ?? "/tmp/donkeylabs-workflows";
+    this.tcpPortRange = config.tcpPortRange ?? [49152, 65535];
+    this.dbPath = config.dbPath;
+    this.heartbeatTimeoutMs = config.heartbeatTimeout ?? 60000;
+  }
+
+  private getSocketServer(): WorkflowSocketServer {
+    if (!this.socketServer) {
+      this.socketServer = createWorkflowSocketServer(
+        {
+          socketDir: this.socketDir,
+          tcpPortRange: this.tcpPortRange,
+        },
+        {
+          onEvent: (event) => this.handleIsolatedEvent(event),
+          onProxyCall: (request) => this.handleProxyCall(request),
+          onConnect: (instanceId) => {
+            console.log(`[Workflows] Isolated workflow ${instanceId} connected`);
+          },
+          onDisconnect: (instanceId) => {
+            console.log(`[Workflows] Isolated workflow ${instanceId} disconnected`);
+          },
+          onError: (error, instanceId) => {
+            console.error(`[Workflows] Socket error for ${instanceId}:`, error);
+          },
+        }
+      );
+    }
+    return this.socketServer;
   }
 
   setCore(core: CoreServices): void {
     this.core = core;
+    // Extract DB path if using Kysely adapter (for isolated workflows)
+    if (!this.dbPath && (core.db as any)?.getExecutor) {
+      // Try to get the database path from the Kysely instance
+      // This is a bit hacky but necessary for isolated workflows
+      try {
+        const executor = (core.db as any).getExecutor();
+        const adapter = executor?.adapter;
+        if (adapter?.db?.filename) {
+          this.dbPath = adapter.db.filename;
+        }
+      } catch {
+        // Ignore - dbPath might be set manually
+      }
+    }
   }
 
   setPlugins(plugins: Record<string, any>): void {
     this.plugins = plugins;
   }
 
-  register(definition: WorkflowDefinition): void {
+  async updateMetadata(instanceId: string, key: string, value: any): Promise<void> {
+    const instance = await this.adapter.getInstance(instanceId);
+    if (!instance) return;
+
+    const metadata = { ...(instance.metadata || {}), [key]: value };
+    await this.adapter.updateInstance(instanceId, { metadata });
+  }
+
+  register(definition: WorkflowDefinition, options?: WorkflowRegisterOptions): void {
     if (this.definitions.has(definition.name)) {
       throw new Error(`Workflow "${definition.name}" is already registered`);
     }
+
+    // Validate isolated workflows don't use unsupported step types
+    if (definition.isolated !== false) {
+      for (const [stepName, step] of definition.steps) {
+        if (step.type === "choice" || step.type === "parallel") {
+          throw new Error(
+            `Workflow "${definition.name}" uses ${step.type} step "${stepName}" ` +
+            `which is not supported in isolated mode. Use .isolated(false) to run inline.`
+          );
+        }
+      }
+    }
+
+    // Store module path for isolated workflows
+    if (options?.modulePath) {
+      this.workflowModulePaths.set(definition.name, options.modulePath);
+    } else if (definition.isolated !== false) {
+      // Warn if isolated workflow has no module path
+      console.warn(
+        `[Workflows] Workflow "${definition.name}" is isolated but no modulePath provided. ` +
+        `Use: workflows.register(myWorkflow, { modulePath: import.meta.url })`
+      );
+    }
+
     this.definitions.set(definition.name, definition);
   }
 
@@ -652,8 +808,35 @@ class WorkflowsImpl implements Workflows {
       input,
     });
 
-    // Start execution
-    this.executeWorkflow(instance.id, definition);
+    // SSE broadcast for real-time monitoring
+    if (this.sse) {
+      this.sse.broadcast(`workflow:${instance.id}`, "started", {
+        workflowName,
+        input,
+      });
+      this.sse.broadcast("workflows:all", "workflow.started", {
+        instanceId: instance.id,
+        workflowName,
+        input,
+      });
+    }
+
+    // Start execution (isolated or inline based on definition.isolated)
+    const isIsolated = definition.isolated !== false;
+    const modulePath = this.workflowModulePaths.get(workflowName);
+
+    if (isIsolated && modulePath && this.dbPath) {
+      // Execute in isolated subprocess
+      this.executeIsolatedWorkflow(instance.id, definition, input, modulePath);
+    } else {
+      // Execute inline (existing behavior)
+      if (isIsolated && !modulePath) {
+        console.warn(
+          `[Workflows] Workflow "${workflowName}" falling back to inline execution (no modulePath)`
+        );
+      }
+      this.executeWorkflow(instance.id, definition);
+    }
 
     return instance.id;
   }
@@ -668,7 +851,21 @@ class WorkflowsImpl implements Workflows {
       return false;
     }
 
-    // Clear timeout
+    // Kill isolated process if running
+    const isolatedInfo = this.isolatedProcesses.get(instanceId);
+    if (isolatedInfo) {
+      try {
+        process.kill(isolatedInfo.pid, "SIGTERM");
+      } catch {
+        // Process might already be dead
+      }
+      if (isolatedInfo.timeout) clearTimeout(isolatedInfo.timeout);
+      if (isolatedInfo.heartbeatTimeout) clearTimeout(isolatedInfo.heartbeatTimeout);
+      this.isolatedProcesses.delete(instanceId);
+      await this.getSocketServer().closeSocket(instanceId);
+    }
+
+    // Clear inline timeout
     const runInfo = this.running.get(instanceId);
     if (runInfo?.timeout) {
       clearTimeout(runInfo.timeout);
@@ -713,18 +910,50 @@ class WorkflowsImpl implements Workflows {
       }
 
       console.log(`[Workflows] Resuming workflow instance ${instance.id}`);
-      this.executeWorkflow(instance.id, definition);
+
+      // Check isolation mode and call appropriate method
+      const isIsolated = definition.isolated !== false;
+      const modulePath = this.workflowModulePaths.get(instance.workflowName);
+
+      if (isIsolated && modulePath && this.dbPath) {
+        this.executeIsolatedWorkflow(instance.id, definition, instance.input, modulePath);
+      } else {
+        this.executeWorkflow(instance.id, definition);
+      }
     }
   }
 
   async stop(): Promise<void> {
-    // Clear all timeouts
+    // Kill all isolated processes
+    for (const [instanceId, info] of this.isolatedProcesses) {
+      try {
+        process.kill(info.pid, "SIGTERM");
+      } catch {
+        // Process might already be dead
+      }
+      if (info.timeout) clearTimeout(info.timeout);
+      if (info.heartbeatTimeout) clearTimeout(info.heartbeatTimeout);
+    }
+    this.isolatedProcesses.clear();
+
+    // Shutdown socket server
+    if (this.socketServer) {
+      await this.socketServer.shutdown();
+      this.socketServer = undefined;
+    }
+
+    // Clear all inline timeouts
     for (const [instanceId, runInfo] of this.running) {
       if (runInfo.timeout) {
         clearTimeout(runInfo.timeout);
       }
     }
     this.running.clear();
+
+    // Stop adapter (cleanup timers and prevent further DB access)
+    if (this.adapter && typeof (this.adapter as any).stop === "function") {
+      (this.adapter as any).stop();
+    }
   }
 
   // ============================================
@@ -789,6 +1018,16 @@ class WorkflowsImpl implements Workflows {
       stepName,
       stepType: step.type,
     });
+
+    // Broadcast via SSE
+    if (this.sse) {
+      this.sse.broadcast(`workflow:${instanceId}`, "step.started", { stepName });
+      this.sse.broadcast("workflows:all", "workflow.step.started", {
+        instanceId,
+        workflowName: instance.workflowName,
+        stepName,
+      });
+    }
 
     // Update step result as running
     const stepResult: StepResult = {
@@ -1215,6 +1454,12 @@ class WorkflowsImpl implements Workflows {
     const instance = await this.adapter.getInstance(instanceId);
     if (!instance) return;
 
+    // Check if workflow is still running (not cancelled/failed/timed out)
+    if (instance.status !== "running") {
+      console.log(`[Workflows] Ignoring step completion for ${instanceId}, status is ${instance.status}`);
+      return;
+    }
+
     // Update step result
     const stepResult = instance.stepResults[stepName] ?? {
       stepName,
@@ -1237,6 +1482,19 @@ class WorkflowsImpl implements Workflows {
       output,
     });
 
+    // Broadcast step completed via SSE
+    if (this.sse) {
+      this.sse.broadcast(`workflow:${instanceId}`, "step.completed", {
+        stepName,
+        output,
+      });
+      this.sse.broadcast("workflows:all", "workflow.step.completed", {
+        instanceId,
+        workflowName: instance.workflowName,
+        stepName,
+      });
+    }
+
     // Calculate and emit progress
     const totalSteps = definition.steps.size;
     const completedSteps = Object.values(instance.stepResults).filter(
@@ -1253,13 +1511,19 @@ class WorkflowsImpl implements Workflows {
       totalSteps,
     });
 
-    // Broadcast via SSE
+    // Broadcast progress via SSE
     if (this.sse) {
       this.sse.broadcast(`workflow:${instanceId}`, "progress", {
         progress,
         currentStep: stepName,
         completedSteps,
         totalSteps,
+      });
+      this.sse.broadcast("workflows:all", "workflow.progress", {
+        instanceId,
+        workflowName: instance.workflowName,
+        progress,
+        currentStep: stepName,
       });
     }
 
@@ -1350,6 +1614,20 @@ class WorkflowsImpl implements Workflows {
       attempts: stepResult.attempts,
     });
 
+    // Broadcast step failed via SSE
+    if (this.sse) {
+      this.sse.broadcast(`workflow:${instanceId}`, "step.failed", {
+        stepName,
+        error,
+      });
+      this.sse.broadcast("workflows:all", "workflow.step.failed", {
+        instanceId,
+        workflowName: instance.workflowName,
+        stepName,
+        error,
+      });
+    }
+
     // Fail the workflow
     await this.failWorkflow(instanceId, `Step "${stepName}" failed: ${error}`);
   }
@@ -1357,6 +1635,12 @@ class WorkflowsImpl implements Workflows {
   private async completeWorkflow(instanceId: string, output?: any): Promise<void> {
     const instance = await this.adapter.getInstance(instanceId);
     if (!instance) return;
+
+    // Check if workflow is still running (not cancelled/failed/timed out)
+    if (instance.status !== "running") {
+      console.log(`[Workflows] Ignoring workflow completion for ${instanceId}, status is ${instance.status}`);
+      return;
+    }
 
     // Clear timeout
     const runInfo = this.running.get(instanceId);
@@ -1381,6 +1665,10 @@ class WorkflowsImpl implements Workflows {
     // Broadcast via SSE
     if (this.sse) {
       this.sse.broadcast(`workflow:${instanceId}`, "completed", { output });
+      this.sse.broadcast("workflows:all", "workflow.completed", {
+        instanceId,
+        workflowName: instance.workflowName,
+      });
     }
   }
 
@@ -1410,12 +1698,445 @@ class WorkflowsImpl implements Workflows {
     // Broadcast via SSE
     if (this.sse) {
       this.sse.broadcast(`workflow:${instanceId}`, "failed", { error });
+      this.sse.broadcast("workflows:all", "workflow.failed", {
+        instanceId,
+        workflowName: instance.workflowName,
+        error,
+      });
     }
   }
 
   private async emitEvent(event: string, data: any): Promise<void> {
     if (this.events) {
       await this.events.emit(event, data);
+    }
+  }
+
+  // ============================================
+  // Isolated Execution Engine
+  // ============================================
+
+  /**
+   * Execute a workflow in an isolated subprocess
+   */
+  private async executeIsolatedWorkflow(
+    instanceId: string,
+    definition: WorkflowDefinition,
+    input: any,
+    modulePath: string
+  ): Promise<void> {
+    const socketServer = this.getSocketServer();
+
+    // Create socket for this workflow instance
+    const { socketPath, tcpPort } = await socketServer.createSocket(instanceId);
+
+    // Mark workflow as running
+    await this.adapter.updateInstance(instanceId, {
+      status: "running",
+      startedAt: new Date(),
+    });
+
+    // Get the executor path
+    const currentDir = dirname(fileURLToPath(import.meta.url));
+    const executorPath = join(currentDir, "workflow-executor.ts");
+
+    // Prepare config for the executor
+    const config = {
+      instanceId,
+      workflowName: definition.name,
+      input,
+      socketPath,
+      tcpPort,
+      modulePath,
+      dbPath: this.dbPath,
+    };
+
+    // Spawn the subprocess
+    const proc = Bun.spawn(["bun", "run", executorPath], {
+      stdin: "pipe",
+      stdout: "inherit",
+      stderr: "inherit",
+      env: {
+        ...process.env,
+        // Ensure the subprocess can import from the same paths
+        NODE_OPTIONS: process.env.NODE_OPTIONS ?? "",
+      },
+    });
+
+    // Send config via stdin
+    proc.stdin.write(JSON.stringify(config));
+    proc.stdin.end();
+
+    // Track the process
+    this.isolatedProcesses.set(instanceId, {
+      pid: proc.pid,
+      lastHeartbeat: Date.now(),
+    });
+
+    // Set up workflow timeout
+    if (definition.timeout) {
+      const timeoutHandle = setTimeout(async () => {
+        await this.handleIsolatedTimeout(instanceId, proc.pid);
+      }, definition.timeout);
+      const info = this.isolatedProcesses.get(instanceId);
+      if (info) info.timeout = timeoutHandle;
+    }
+
+    // Set up heartbeat timeout
+    this.resetHeartbeatTimeout(instanceId, proc.pid);
+
+    // Handle process exit
+    proc.exited.then(async (exitCode) => {
+      const info = this.isolatedProcesses.get(instanceId);
+      if (info) {
+        if (info.timeout) clearTimeout(info.timeout);
+        if (info.heartbeatTimeout) clearTimeout(info.heartbeatTimeout);
+        this.isolatedProcesses.delete(instanceId);
+      }
+      await socketServer.closeSocket(instanceId);
+
+      // Check if workflow is still running (crashed before completion)
+      const instance = await this.adapter.getInstance(instanceId);
+      if (instance && instance.status === "running") {
+        console.error(`[Workflows] Isolated workflow ${instanceId} crashed with exit code ${exitCode}`);
+        await this.failWorkflow(instanceId, `Subprocess crashed with exit code ${exitCode}`);
+      }
+    });
+  }
+
+  /**
+   * Handle events from isolated workflow subprocess
+   */
+  private async handleIsolatedEvent(event: WorkflowEvent): Promise<void> {
+    const { instanceId, type } = event;
+
+    // Reset heartbeat timeout on any event
+    const info = this.isolatedProcesses.get(instanceId);
+    if (info) {
+      info.lastHeartbeat = Date.now();
+      this.resetHeartbeatTimeout(instanceId, info.pid);
+    }
+
+    switch (type) {
+      case "started":
+        // Already marked as running in executeIsolatedWorkflow
+        break;
+
+      case "heartbeat":
+        // Heartbeat handled above
+        break;
+
+      case "step.started": {
+        const instance = await this.adapter.getInstance(instanceId);
+        if (!instance) break;
+
+        // Update current step and step results in DB
+        const stepResult = {
+          stepName: event.stepName!,
+          status: "running" as const,
+          startedAt: new Date(),
+          attempts: (instance.stepResults[event.stepName!]?.attempts ?? 0) + 1,
+        };
+        await this.adapter.updateInstance(instanceId, {
+          currentStep: event.stepName,
+          stepResults: { ...instance.stepResults, [event.stepName!]: stepResult },
+        });
+
+        await this.emitEvent("workflow.step.started", {
+          instanceId,
+          workflowName: instance?.workflowName,
+          stepName: event.stepName,
+        });
+        // Broadcast via SSE
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${instanceId}`, "step.started", {
+            stepName: event.stepName,
+          });
+          this.sse.broadcast("workflows:all", "workflow.step.started", {
+            instanceId,
+            workflowName: instance?.workflowName,
+            stepName: event.stepName,
+          });
+        }
+        break;
+      }
+
+      case "step.completed": {
+        const instance = await this.adapter.getInstance(instanceId);
+        if (!instance) break;
+
+        // Update step results in DB
+        const stepResult = instance.stepResults[event.stepName!] ?? {
+          stepName: event.stepName!,
+          status: "pending" as const,
+          startedAt: new Date(),
+          attempts: 0,
+        };
+        stepResult.status = "completed";
+        stepResult.output = event.output;
+        stepResult.completedAt = new Date();
+
+        await this.adapter.updateInstance(instanceId, {
+          stepResults: { ...instance.stepResults, [event.stepName!]: stepResult },
+          currentStep: event.nextStep,
+        });
+
+        await this.emitEvent("workflow.step.completed", {
+          instanceId,
+          workflowName: instance?.workflowName,
+          stepName: event.stepName,
+          output: event.output,
+        });
+        // Broadcast via SSE
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${instanceId}`, "step.completed", {
+            stepName: event.stepName,
+            output: event.output,
+          });
+          this.sse.broadcast("workflows:all", "workflow.step.completed", {
+            instanceId,
+            workflowName: instance?.workflowName,
+            stepName: event.stepName,
+            output: event.output,
+          });
+        }
+        break;
+      }
+
+      case "step.failed": {
+        const instance = await this.adapter.getInstance(instanceId);
+        if (!instance) break;
+
+        // Update step results in DB
+        const stepResult = instance.stepResults[event.stepName!] ?? {
+          stepName: event.stepName!,
+          status: "pending" as const,
+          startedAt: new Date(),
+          attempts: 0,
+        };
+        stepResult.status = "failed";
+        stepResult.error = event.error;
+        stepResult.completedAt = new Date();
+
+        await this.adapter.updateInstance(instanceId, {
+          stepResults: { ...instance.stepResults, [event.stepName!]: stepResult },
+        });
+
+        await this.emitEvent("workflow.step.failed", {
+          instanceId,
+          workflowName: instance?.workflowName,
+          stepName: event.stepName,
+          error: event.error,
+        });
+        // Broadcast via SSE
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${instanceId}`, "step.failed", {
+            stepName: event.stepName,
+            error: event.error,
+          });
+          this.sse.broadcast("workflows:all", "workflow.step.failed", {
+            instanceId,
+            workflowName: instance?.workflowName,
+            stepName: event.stepName,
+            error: event.error,
+          });
+        }
+        break;
+      }
+
+      case "progress": {
+        const instance = await this.adapter.getInstance(instanceId);
+        await this.emitEvent("workflow.progress", {
+          instanceId,
+          workflowName: instance?.workflowName,
+          progress: event.progress,
+          completedSteps: event.completedSteps,
+          totalSteps: event.totalSteps,
+        });
+        // Broadcast via SSE
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${instanceId}`, "progress", {
+            progress: event.progress,
+            completedSteps: event.completedSteps,
+            totalSteps: event.totalSteps,
+          });
+          this.sse.broadcast("workflows:all", "workflow.progress", {
+            instanceId,
+            workflowName: instance?.workflowName,
+            progress: event.progress,
+            completedSteps: event.completedSteps,
+            totalSteps: event.totalSteps,
+          });
+        }
+        break;
+      }
+
+      case "completed":
+        await this.completeWorkflowIsolated(instanceId, event.output);
+        break;
+
+      case "failed":
+        await this.failWorkflowIsolated(instanceId, event.error ?? "Unknown error");
+        break;
+    }
+  }
+
+  /**
+   * Handle proxy calls from isolated subprocess
+   */
+  private async handleProxyCall(request: ProxyRequest): Promise<any> {
+    const { target, service, method, args } = request;
+
+    if (target === "plugin") {
+      const plugin = this.plugins[service];
+      if (!plugin) {
+        throw new Error(`Plugin "${service}" not found`);
+      }
+      const fn = plugin[method];
+      if (typeof fn !== "function") {
+        throw new Error(`Method "${method}" not found on plugin "${service}"`);
+      }
+      return fn.apply(plugin, args);
+    } else if (target === "core") {
+      if (!this.core) {
+        throw new Error("Core services not available");
+      }
+      const coreService = (this.core as any)[service];
+      if (!coreService) {
+        throw new Error(`Core service "${service}" not found`);
+      }
+      const fn = coreService[method];
+      if (typeof fn !== "function") {
+        throw new Error(`Method "${method}" not found on core service "${service}"`);
+      }
+      return fn.apply(coreService, args);
+    } else {
+      throw new Error(`Unknown proxy target: ${target}`);
+    }
+  }
+
+  /**
+   * Reset heartbeat timeout for an isolated workflow
+   */
+  private resetHeartbeatTimeout(instanceId: string, pid: number): void {
+    const info = this.isolatedProcesses.get(instanceId);
+    if (!info) return;
+
+    // Clear existing timeout
+    if (info.heartbeatTimeout) {
+      clearTimeout(info.heartbeatTimeout);
+    }
+
+    // Set new timeout
+    info.heartbeatTimeout = setTimeout(async () => {
+      // Check if process is still alive
+      if (!isProcessAlive(pid)) {
+        return; // Process already dead, exit handler will handle it
+      }
+
+      console.error(`[Workflows] No heartbeat from isolated workflow ${instanceId} for ${this.heartbeatTimeoutMs}ms`);
+      await this.handleIsolatedTimeout(instanceId, pid);
+    }, this.heartbeatTimeoutMs);
+  }
+
+  /**
+   * Handle timeout for isolated workflow (workflow timeout or heartbeat timeout)
+   */
+  private async handleIsolatedTimeout(instanceId: string, pid: number): Promise<void> {
+    const info = this.isolatedProcesses.get(instanceId);
+    if (!info) return;
+
+    // Kill the process
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Process might already be dead
+    }
+
+    // Clean up
+    if (info.timeout) clearTimeout(info.timeout);
+    if (info.heartbeatTimeout) clearTimeout(info.heartbeatTimeout);
+    this.isolatedProcesses.delete(instanceId);
+    await this.getSocketServer().closeSocket(instanceId);
+
+    // Fail the workflow
+    await this.failWorkflow(instanceId, "Workflow timed out");
+  }
+
+  /**
+   * Complete an isolated workflow (called from event handler)
+   */
+  private async completeWorkflowIsolated(instanceId: string, output?: any): Promise<void> {
+    const instance = await this.adapter.getInstance(instanceId);
+    if (!instance) return;
+
+    // Clean up isolated process tracking (process should have exited)
+    const info = this.isolatedProcesses.get(instanceId);
+    if (info) {
+      if (info.timeout) clearTimeout(info.timeout);
+      if (info.heartbeatTimeout) clearTimeout(info.heartbeatTimeout);
+      this.isolatedProcesses.delete(instanceId);
+    }
+
+    await this.adapter.updateInstance(instanceId, {
+      status: "completed",
+      output,
+      completedAt: new Date(),
+      currentStep: undefined,
+    });
+
+    await this.emitEvent("workflow.completed", {
+      instanceId,
+      workflowName: instance.workflowName,
+      output,
+    });
+
+    // Broadcast via SSE
+    if (this.sse) {
+      this.sse.broadcast(`workflow:${instanceId}`, "completed", { output });
+      this.sse.broadcast("workflows:all", "workflow.completed", {
+        instanceId,
+        workflowName: instance.workflowName,
+        output,
+      });
+    }
+  }
+
+  /**
+   * Fail an isolated workflow (called from event handler)
+   */
+  private async failWorkflowIsolated(instanceId: string, error: string): Promise<void> {
+    const instance = await this.adapter.getInstance(instanceId);
+    if (!instance) return;
+
+    // Clean up isolated process tracking
+    const info = this.isolatedProcesses.get(instanceId);
+    if (info) {
+      if (info.timeout) clearTimeout(info.timeout);
+      if (info.heartbeatTimeout) clearTimeout(info.heartbeatTimeout);
+      this.isolatedProcesses.delete(instanceId);
+    }
+
+    await this.adapter.updateInstance(instanceId, {
+      status: "failed",
+      error,
+      completedAt: new Date(),
+    });
+
+    await this.emitEvent("workflow.failed", {
+      instanceId,
+      workflowName: instance.workflowName,
+      error,
+    });
+
+    // Broadcast via SSE
+    if (this.sse) {
+      this.sse.broadcast(`workflow:${instanceId}`, "failed", { error });
+      this.sse.broadcast("workflows:all", "workflow.failed", {
+        instanceId,
+        workflowName: instance.workflowName,
+        error,
+      });
     }
   }
 }

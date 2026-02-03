@@ -42,6 +42,7 @@ export class KyselyWorkflowAdapter implements WorkflowAdapter {
   private db: Kysely<Database>;
   private cleanupTimer?: ReturnType<typeof setInterval>;
   private cleanupDays: number;
+  private stopped = false;
 
   constructor(db: Kysely<any>, config: KyselyWorkflowAdapterConfig = {}) {
     this.db = db as Kysely<Database>;
@@ -54,7 +55,16 @@ export class KyselyWorkflowAdapter implements WorkflowAdapter {
     }
   }
 
+  /** Check if adapter is stopped (for safe database access) */
+  private checkStopped(): boolean {
+    return this.stopped;
+  }
+
   async createInstance(instance: Omit<WorkflowInstance, "id">): Promise<WorkflowInstance> {
+    if (this.checkStopped()) {
+      throw new Error("WorkflowAdapter has been stopped");
+    }
+
     const id = `wf_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
     await this.db
@@ -84,17 +94,27 @@ export class KyselyWorkflowAdapter implements WorkflowAdapter {
   }
 
   async getInstance(instanceId: string): Promise<WorkflowInstance | null> {
-    const row = await this.db
-      .selectFrom("__donkeylabs_workflow_instances__")
-      .selectAll()
-      .where("id", "=", instanceId)
-      .executeTakeFirst();
+    if (this.checkStopped()) return null;
 
-    if (!row) return null;
-    return this.rowToInstance(row);
+    try {
+      const row = await this.db
+        .selectFrom("__donkeylabs_workflow_instances__")
+        .selectAll()
+        .where("id", "=", instanceId)
+        .executeTakeFirst();
+
+      if (!row) return null;
+      return this.rowToInstance(row);
+    } catch (err: any) {
+      // Silently ignore errors if adapter was stopped during query
+      if (this.stopped && err?.message?.includes("destroyed")) return null;
+      throw err;
+    }
   }
 
   async updateInstance(instanceId: string, updates: Partial<WorkflowInstance>): Promise<void> {
+    if (this.checkStopped()) return;
+
     const updateData: Partial<WorkflowInstancesTable> = {};
 
     if (updates.status !== undefined) {
@@ -129,14 +149,22 @@ export class KyselyWorkflowAdapter implements WorkflowAdapter {
 
     if (Object.keys(updateData).length === 0) return;
 
-    await this.db
-      .updateTable("__donkeylabs_workflow_instances__")
-      .set(updateData)
-      .where("id", "=", instanceId)
-      .execute();
+    try {
+      await this.db
+        .updateTable("__donkeylabs_workflow_instances__")
+        .set(updateData)
+        .where("id", "=", instanceId)
+        .execute();
+    } catch (err: any) {
+      // Silently ignore errors if adapter was stopped during query
+      if (this.stopped && err?.message?.includes("destroyed")) return;
+      throw err;
+    }
   }
 
   async deleteInstance(instanceId: string): Promise<boolean> {
+    if (this.checkStopped()) return false;
+
     // Check if exists first since BunSqliteDialect doesn't report numDeletedRows properly
     const exists = await this.db
       .selectFrom("__donkeylabs_workflow_instances__")
@@ -158,6 +186,8 @@ export class KyselyWorkflowAdapter implements WorkflowAdapter {
     workflowName: string,
     status?: WorkflowStatus
   ): Promise<WorkflowInstance[]> {
+    if (this.checkStopped()) return [];
+
     let query = this.db
       .selectFrom("__donkeylabs_workflow_instances__")
       .selectAll()
@@ -172,16 +202,26 @@ export class KyselyWorkflowAdapter implements WorkflowAdapter {
   }
 
   async getRunningInstances(): Promise<WorkflowInstance[]> {
-    const rows = await this.db
-      .selectFrom("__donkeylabs_workflow_instances__")
-      .selectAll()
-      .where("status", "=", "running")
-      .execute();
+    if (this.checkStopped()) return [];
 
-    return rows.map((r) => this.rowToInstance(r));
+    try {
+      const rows = await this.db
+        .selectFrom("__donkeylabs_workflow_instances__")
+        .selectAll()
+        .where("status", "=", "running")
+        .execute();
+
+      return rows.map((r) => this.rowToInstance(r));
+    } catch (err: any) {
+      // Silently ignore errors if adapter was stopped during query
+      if (this.stopped && err?.message?.includes("destroyed")) return [];
+      throw err;
+    }
   }
 
   async getAllInstances(options: GetAllWorkflowsOptions = {}): Promise<WorkflowInstance[]> {
+    if (this.checkStopped()) return [];
+
     const { status, workflowName, limit = 100, offset = 0 } = options;
 
     let query = this.db.selectFrom("__donkeylabs_workflow_instances__").selectAll();
@@ -242,7 +282,7 @@ export class KyselyWorkflowAdapter implements WorkflowAdapter {
 
   /** Clean up old completed/failed/cancelled workflows */
   private async cleanup(): Promise<void> {
-    if (this.cleanupDays <= 0) return;
+    if (this.cleanupDays <= 0 || this.checkStopped()) return;
 
     try {
       const cutoff = new Date();
@@ -274,6 +314,7 @@ export class KyselyWorkflowAdapter implements WorkflowAdapter {
 
   /** Stop the adapter and cleanup timer */
   stop(): void {
+    this.stopped = true;
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = undefined;

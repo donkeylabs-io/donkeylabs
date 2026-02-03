@@ -91,6 +91,14 @@ export function defineConfig(config: DonkeylabsConfig): DonkeylabsConfig {
 // Re-export HttpError for custom error creation
 export { HttpError } from "./core/errors";
 
+// Core services types
+export {
+  type Logger,
+  type LogLevel,
+  type ErrorFactory,
+  type ErrorFactories,
+} from "./core/index";
+
 // Workflows (step functions)
 export {
   workflow,
@@ -129,3 +137,9 @@ export {
   type IntegrationHarnessOptions,
   type IntegrationHarnessResult,
 } from "./harness";
+
+// E2E Testing - moved to separate subpath export: "@donkeylabs/server/testing"
+// import { createE2EFixtures, defineE2EConfig } from "@donkeylabs/server/testing";
+
+// Database Testing Utilities - moved to separate subpath export: "@donkeylabs/server/testing"
+// import { createTestDatabase, resetTestDatabase } from "@donkeylabs/server/testing";

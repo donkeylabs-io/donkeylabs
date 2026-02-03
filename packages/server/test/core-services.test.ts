@@ -385,7 +385,7 @@ describe("Jobs Service", () => {
 
   beforeEach(() => {
     events = createEvents();
-    jobs = createJobs({ events, pollInterval: 50 });
+    jobs = createJobs({ events, pollInterval: 50, retryBackoff: false });
   });
 
   afterEach(async () => {

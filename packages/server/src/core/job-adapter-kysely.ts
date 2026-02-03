@@ -46,6 +46,7 @@ export class KyselyJobAdapter implements JobAdapter {
   private db: Kysely<Database>;
   private cleanupTimer?: ReturnType<typeof setInterval>;
   private cleanupDays: number;
+  private stopped = false;
 
   constructor(db: Kysely<any>, config: KyselyJobAdapterConfig = {}) {
     this.db = db as Kysely<Database>;
@@ -58,7 +59,16 @@ export class KyselyJobAdapter implements JobAdapter {
     }
   }
 
+  /** Check if adapter is stopped (for safe database access) */
+  private checkStopped(): boolean {
+    return this.stopped;
+  }
+
   async create(job: Omit<Job, "id">): Promise<Job> {
+    if (this.checkStopped()) {
+      throw new Error("JobAdapter has been stopped");
+    }
+
     const id = `job_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
     await this.db
@@ -89,17 +99,27 @@ export class KyselyJobAdapter implements JobAdapter {
   }
 
   async get(jobId: string): Promise<Job | null> {
-    const row = await this.db
-      .selectFrom("__donkeylabs_jobs__")
-      .selectAll()
-      .where("id", "=", jobId)
-      .executeTakeFirst();
+    if (this.checkStopped()) return null;
 
-    if (!row) return null;
-    return this.rowToJob(row);
+    try {
+      const row = await this.db
+        .selectFrom("__donkeylabs_jobs__")
+        .selectAll()
+        .where("id", "=", jobId)
+        .executeTakeFirst();
+
+      if (!row) return null;
+      return this.rowToJob(row);
+    } catch (err: any) {
+      // Silently ignore errors if adapter was stopped during query
+      if (this.stopped && err?.message?.includes("destroyed")) return null;
+      throw err;
+    }
   }
 
   async update(jobId: string, updates: Partial<Job>): Promise<void> {
+    if (this.checkStopped()) return;
+
     const updateData: Partial<JobsTable> = {};
 
     if (updates.status !== undefined) {
@@ -139,14 +159,22 @@ export class KyselyJobAdapter implements JobAdapter {
 
     if (Object.keys(updateData).length === 0) return;
 
-    await this.db
-      .updateTable("__donkeylabs_jobs__")
-      .set(updateData)
-      .where("id", "=", jobId)
-      .execute();
+    try {
+      await this.db
+        .updateTable("__donkeylabs_jobs__")
+        .set(updateData)
+        .where("id", "=", jobId)
+        .execute();
+    } catch (err: any) {
+      // Silently ignore errors if adapter was stopped during query
+      if (this.stopped && err?.message?.includes("destroyed")) return;
+      throw err;
+    }
   }
 
   async delete(jobId: string): Promise<boolean> {
+    if (this.checkStopped()) return false;
+
     // Check if exists first since BunSqliteDialect doesn't report numDeletedRows properly
     const exists = await this.db
       .selectFrom("__donkeylabs_jobs__")
@@ -165,91 +193,139 @@ export class KyselyJobAdapter implements JobAdapter {
   }
 
   async getPending(limit: number = 100): Promise<Job[]> {
-    const rows = await this.db
-      .selectFrom("__donkeylabs_jobs__")
-      .selectAll()
-      .where("status", "=", "pending")
-      .orderBy("created_at", "asc")
-      .limit(limit)
-      .execute();
+    if (this.checkStopped()) return [];
 
-    return rows.map((r) => this.rowToJob(r));
+    try {
+      const rows = await this.db
+        .selectFrom("__donkeylabs_jobs__")
+        .selectAll()
+        .where("status", "=", "pending")
+        .orderBy("created_at", "asc")
+        .limit(limit)
+        .execute();
+
+      return rows.map((r) => this.rowToJob(r));
+    } catch (err: any) {
+      // Silently ignore errors if adapter was stopped during query
+      if (this.stopped && err?.message?.includes("destroyed")) return [];
+      throw err;
+    }
   }
 
   async getScheduledReady(now: Date): Promise<Job[]> {
-    const rows = await this.db
-      .selectFrom("__donkeylabs_jobs__")
-      .selectAll()
-      .where("status", "=", "scheduled")
-      .where("run_at", "<=", now.toISOString())
-      .orderBy("run_at", "asc")
-      .execute();
+    if (this.checkStopped()) return [];
 
-    return rows.map((r) => this.rowToJob(r));
+    try {
+      const rows = await this.db
+        .selectFrom("__donkeylabs_jobs__")
+        .selectAll()
+        .where("status", "=", "scheduled")
+        .where("run_at", "<=", now.toISOString())
+        .orderBy("run_at", "asc")
+        .execute();
+
+      return rows.map((r) => this.rowToJob(r));
+    } catch (err: any) {
+      // Silently ignore errors if adapter was stopped during query
+      if (this.stopped && err?.message?.includes("destroyed")) return [];
+      throw err;
+    }
   }
 
   async getByName(name: string, status?: JobStatus): Promise<Job[]> {
-    let query = this.db
-      .selectFrom("__donkeylabs_jobs__")
-      .selectAll()
-      .where("name", "=", name);
+    if (this.checkStopped()) return [];
 
-    if (status) {
-      query = query.where("status", "=", status);
+    try {
+      let query = this.db
+        .selectFrom("__donkeylabs_jobs__")
+        .selectAll()
+        .where("name", "=", name);
+
+      if (status) {
+        query = query.where("status", "=", status);
+      }
+
+      const rows = await query.orderBy("created_at", "desc").execute();
+      return rows.map((r) => this.rowToJob(r));
+    } catch (err: any) {
+      // Silently ignore errors if adapter was stopped during query
+      if (this.stopped && err?.message?.includes("destroyed")) return [];
+      throw err;
     }
-
-    const rows = await query.orderBy("created_at", "desc").execute();
-    return rows.map((r) => this.rowToJob(r));
   }
 
   async getRunningExternal(): Promise<Job[]> {
-    const rows = await this.db
-      .selectFrom("__donkeylabs_jobs__")
-      .selectAll()
-      .where("external", "=", 1)
-      .where("status", "=", "running")
-      .execute();
+    if (this.checkStopped()) return [];
 
-    return rows.map((r) => this.rowToJob(r));
+    try {
+      const rows = await this.db
+        .selectFrom("__donkeylabs_jobs__")
+        .selectAll()
+        .where("external", "=", 1)
+        .where("status", "=", "running")
+        .execute();
+
+      return rows.map((r) => this.rowToJob(r));
+    } catch (err: any) {
+      // Silently ignore errors if adapter was stopped during query
+      if (this.stopped && err?.message?.includes("destroyed")) return [];
+      throw err;
+    }
   }
 
   async getOrphanedExternal(): Promise<Job[]> {
-    const rows = await this.db
-      .selectFrom("__donkeylabs_jobs__")
-      .selectAll()
-      .where("external", "=", 1)
-      .where("status", "=", "running")
-      .where((eb) =>
-        eb.or([
-          eb("process_state", "=", "running"),
-          eb("process_state", "=", "orphaned"),
-          eb("process_state", "=", "spawning"),
-        ])
-      )
-      .execute();
+    if (this.checkStopped()) return [];
 
-    return rows.map((r) => this.rowToJob(r));
+    try {
+      const rows = await this.db
+        .selectFrom("__donkeylabs_jobs__")
+        .selectAll()
+        .where("external", "=", 1)
+        .where("status", "=", "running")
+        .where((eb) =>
+          eb.or([
+            eb("process_state", "=", "running"),
+            eb("process_state", "=", "orphaned"),
+            eb("process_state", "=", "spawning"),
+          ])
+        )
+        .execute();
+
+      return rows.map((r) => this.rowToJob(r));
+    } catch (err: any) {
+      // Silently ignore errors if adapter was stopped during query
+      if (this.stopped && err?.message?.includes("destroyed")) return [];
+      throw err;
+    }
   }
 
   async getAll(options: GetAllJobsOptions = {}): Promise<Job[]> {
-    const { status, name, limit = 100, offset = 0 } = options;
+    if (this.checkStopped()) return [];
 
-    let query = this.db.selectFrom("__donkeylabs_jobs__").selectAll();
+    try {
+      const { status, name, limit = 100, offset = 0 } = options;
 
-    if (status) {
-      query = query.where("status", "=", status);
+      let query = this.db.selectFrom("__donkeylabs_jobs__").selectAll();
+
+      if (status) {
+        query = query.where("status", "=", status);
+      }
+      if (name) {
+        query = query.where("name", "=", name);
+      }
+
+      const rows = await query
+        .orderBy("created_at", "desc")
+        .limit(limit)
+        .offset(offset)
+        .execute();
+
+      return rows.map((r) => this.rowToJob(r));
+    } catch (err: any) {
+      // Silently ignore errors if adapter was stopped during query
+      if (this.stopped && err?.message?.includes("destroyed")) return [];
+      throw err;
     }
-    if (name) {
-      query = query.where("name", "=", name);
-    }
-
-    const rows = await query
-      .orderBy("created_at", "desc")
-      .limit(limit)
-      .offset(offset)
-      .execute();
-
-    return rows.map((r) => this.rowToJob(r));
   }
 
   private rowToJob(row: JobsTable): Job {
@@ -278,7 +354,7 @@ export class KyselyJobAdapter implements JobAdapter {
 
   /** Clean up old completed/failed jobs */
   private async cleanup(): Promise<void> {
-    if (this.cleanupDays <= 0) return;
+    if (this.cleanupDays <= 0 || this.checkStopped()) return;
 
     try {
       const cutoff = new Date();
@@ -305,9 +381,36 @@ export class KyselyJobAdapter implements JobAdapter {
 
   /** Stop the adapter and cleanup timer */
   stop(): void {
+    this.stopped = true;
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = undefined;
+    }
+  }
+
+  /** Atomically claim a pending job (returns true if successfully claimed) */
+  async claim(jobId: string): Promise<boolean> {
+    if (this.checkStopped()) return false;
+
+    try {
+      // Use WHERE status = 'pending' for atomicity - only one process can claim
+      const result = await this.db
+        .updateTable("__donkeylabs_jobs__")
+        .set({
+          status: "running",
+          started_at: new Date().toISOString(),
+        })
+        .where("id", "=", jobId)
+        .where("status", "=", "pending")
+        .execute();
+
+      // Kysely returns numUpdatedRows for updates
+      const numUpdated = Number(result[0]?.numUpdatedRows ?? 0);
+      return numUpdated > 0;
+    } catch (err: any) {
+      // Silently ignore errors if adapter was stopped during query
+      if (this.stopped && err?.message?.includes("destroyed")) return false;
+      throw err;
     }
   }
 }

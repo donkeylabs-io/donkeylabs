@@ -305,6 +305,21 @@ interface WorkflowContext {
 
   /** Type-safe step result getter */
   getStepResult<T>(stepName: string): T | undefined;
+
+  /** Core services (logger, events, cache, jobs, sse, etc.) */
+  core: CoreServices;
+
+  /** Plugin services - access your plugins' service methods */
+  plugins: Record<string, any>;
+
+  /** Custom metadata that persists across steps (read-only snapshot) */
+  metadata: Record<string, any>;
+
+  /** Set a metadata value that persists across workflow steps */
+  setMetadata(key: string, value: any): Promise<void>;
+
+  /** Get a typed metadata value */
+  getMetadata<T>(key: string): T | undefined;
 }
 ```
 
@@ -320,10 +335,58 @@ Example usage in step configuration:
   handler: async (input, ctx) => {
     // Access any step's output
     const calcResult = ctx.getStepResult<{ amount: number }>("calculate");
+
+    // Access plugin services
+    const order = await ctx.plugins.orders.getById(input.orderId);
+
+    // Use core services
+    ctx.core.logger.info("Processing order", { orderId: input.orderId });
+
     return { processed: true, amount: calcResult?.amount };
   },
 })
 ```
+
+### Cross-Step Metadata
+
+Use metadata to share data across workflow steps that isn't part of the normal step output flow:
+
+```typescript
+.task("validate", {
+  inputSchema: z.object({ orderId: z.string() }),
+  handler: async (input, ctx) => {
+    // Store correlation ID for logging/tracing across steps
+    await ctx.setMetadata("correlationId", crypto.randomUUID());
+
+    // Store complex context that multiple steps need
+    await ctx.setMetadata("orderContext", {
+      customer: await ctx.plugins.customers.getByOrder(input.orderId),
+      flags: { expedited: false, giftWrap: false },
+    });
+
+    return { valid: true };
+  },
+})
+.task("fulfill", {
+  handler: async (input, ctx) => {
+    // Read metadata from previous steps
+    const correlationId = ctx.getMetadata<string>("correlationId");
+    const orderCtx = ctx.getMetadata<{ customer: Customer; flags: object }>("orderContext");
+
+    ctx.core.logger.info("Fulfilling order", { correlationId, customer: orderCtx?.customer.id });
+
+    // Update metadata for downstream steps
+    await ctx.setMetadata("orderContext", {
+      ...orderCtx,
+      flags: { ...orderCtx?.flags, fulfilled: true },
+    });
+
+    return { shipped: true };
+  },
+})
+```
+
+Metadata is persisted to the database and survives server restarts.
 
 ## Retry Configuration
 
@@ -440,6 +503,8 @@ interface WorkflowInstance {
   output?: any;
   error?: string;
   stepResults: Record<string, StepResult>;
+  /** Custom metadata that persists across steps */
+  metadata?: Record<string, any>;
   createdAt: Date;
   startedAt?: Date;
   completedAt?: Date;
@@ -459,7 +524,28 @@ interface StepResult {
 
 ## Persistence
 
-By default, workflows use an in-memory adapter. For production, implement a `WorkflowAdapter`:
+By default, workflows use a **Kysely database adapter** that stores workflow instances in the same database as your application. This provides automatic persistence and restart resilience.
+
+The framework automatically creates and manages the `__donkeylabs_workflow_instances__` table with proper migrations.
+
+### Built-in Kysely Adapter
+
+The `KyselyWorkflowAdapter` is automatically configured when you provide a database connection:
+
+```typescript
+const server = new AppServer({
+  db: createDatabase(),  // Workflows will automatically persist to this database
+  workflows: {
+    pollInterval: 1000,     // How often to check job completion
+    cleanupDays: 30,        // Auto-cleanup completed workflows older than 30 days (0 to disable)
+    cleanupInterval: 3600000, // Cleanup check interval (default: 1 hour)
+  },
+});
+```
+
+### Custom Adapter
+
+For custom storage backends, implement the `WorkflowAdapter` interface:
 
 ```typescript
 interface WorkflowAdapter {
@@ -469,6 +555,7 @@ interface WorkflowAdapter {
   deleteInstance(instanceId: string): Promise<boolean>;
   getInstancesByWorkflow(workflowName: string, status?: WorkflowStatus): Promise<WorkflowInstance[]>;
   getRunningInstances(): Promise<WorkflowInstance[]>;
+  getAllInstances(options?: GetAllWorkflowsOptions): Promise<WorkflowInstance[]>;
 }
 ```
 
@@ -478,8 +565,8 @@ Configure via `ServerConfig`:
 const server = new AppServer({
   db: createDatabase(),
   workflows: {
-    adapter: new MyDatabaseWorkflowAdapter(db),
-    pollInterval: 1000, // How often to check job completion
+    adapter: new MyCustomWorkflowAdapter(),
+    pollInterval: 1000,
   },
 });
 ```

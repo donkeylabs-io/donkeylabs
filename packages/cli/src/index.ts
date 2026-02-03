@@ -17,6 +17,7 @@ const { positionals, values } = parseArgs({
     help: { type: "boolean", short: "h" },
     version: { type: "boolean", short: "v" },
     type: { type: "string", short: "t" },
+    local: { type: "boolean", short: "l" },
   },
   allowPositionals: true,
 });
@@ -32,24 +33,33 @@ ${pc.bold("Usage:")}
   donkeylabs <command> [options]
 
 ${pc.bold("Commands:")}
-  ${pc.cyan("init")}         Initialize a new project
-  ${pc.cyan("add")}          Add optional plugins (images, auth, etc.)
-  ${pc.cyan("generate")}     Generate types (registry, context, client)
-  ${pc.cyan("plugin")}       Plugin management
-  ${pc.cyan("mcp")}          Setup MCP server for AI-assisted development
+  ${pc.cyan("init")}              Initialize a new project
+  ${pc.cyan("add")}               Add optional plugins (images, auth, etc.)
+  ${pc.cyan("generate")}          Generate types (registry, context, client)
+  ${pc.cyan("plugin")}            Plugin management
+  ${pc.cyan("deploy")} <platform> Deploy (vercel, cloudflare, aws, vps)
+  ${pc.cyan("deploy history")}     Show deployment history
+  ${pc.cyan("deploy rollback")}    Rollback to version
+  ${pc.cyan("deploy stats")}       Show deployment statistics
+  ${pc.cyan("config")}            Configure plugins, deployment, database
+  ${pc.cyan("mcp")}               Setup MCP server for AI-assisted development
 
 ${pc.bold("Options:")}
   -h, --help              Show this help message
   -v, --version           Show version number
   -t, --type <type>       Project type for init (server, sveltekit)
+  -l, --local             Use local workspace packages (for monorepo dev)
 
-${pc.bold("Examples:")}
-  donkeylabs                       # Interactive menu
-  donkeylabs init                  # Interactive project setup
-  donkeylabs init --type server    # Server-only project
-  donkeylabs init --type sveltekit # SvelteKit + adapter project
-  donkeylabs generate
-  donkeylabs plugin create myPlugin
+  ${pc.bold("Examples:")}
+   donkeylabs                       # Interactive menu
+   donkeylabs init                  # Interactive project setup
+   donkeylabs init --type server    # Server-only project
+   donkeylabs init --type sveltekit # SvelteKit + adapter project
+   donkeylabs generate
+   donkeylabs plugin create myPlugin
+   donkeylabs deploy vercel         # Deploy to Vercel
+   donkeylabs config                # Interactive configuration
+   donkeylabs config set DATABASE_URL postgresql://...
 `);
 }
 
@@ -78,12 +88,8 @@ async function main() {
 
   switch (command) {
     case "init":
-      const { initCommand } = await import("./commands/init");
-      const initArgs = [...positionals.slice(1)];
-      if (values.type) {
-        initArgs.push("--type", values.type);
-      }
-      await initCommand(initArgs);
+      const { initEnhancedCommand } = await import("./commands/init-enhanced");
+      await initEnhancedCommand(positionals.slice(1), { useLocalPackages: values.local });
       break;
 
     case "add":
@@ -105,6 +111,28 @@ async function main() {
     case "mcp":
       const { mcpCommand } = await import("./commands/mcp");
       await mcpCommand(positionals.slice(1));
+      break;
+
+    case "deploy":
+      const subcommand = positionals[1];
+      if (subcommand === "history") {
+        const { deployHistoryCommand } = await import("./commands/deploy-enhanced");
+        await deployHistoryCommand(positionals.slice(2));
+      } else if (subcommand === "rollback") {
+        const { deployRollbackCommand } = await import("./commands/deploy-enhanced");
+        await deployRollbackCommand(positionals.slice(2));
+      } else if (subcommand === "stats") {
+        const { deployStatsCommand } = await import("./commands/deploy-enhanced");
+        await deployStatsCommand();
+      } else {
+        const { deployEnhancedCommand } = await import("./commands/deploy-enhanced");
+        await deployEnhancedCommand(positionals.slice(1));
+      }
+      break;
+
+    case "config":
+      const { configCommand } = await import("./commands/config");
+      await configCommand(positionals.slice(1));
       break;
 
     default:

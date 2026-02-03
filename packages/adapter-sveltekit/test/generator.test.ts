@@ -55,16 +55,16 @@ describe("Client Generator", () => {
       const content = await readFile(TEST_OUTPUT_PATH, "utf-8");
 
       // Should include typed route with typed method
-      expect(content).toContain("users = {");
+      expect(content).toContain("users: {");
       expect(content).toContain('list: (input:');
       expect(content).toContain('this.request("api.users.list"');
 
       // Should include raw routes with rawRequest
-      expect(content).toContain("cameras = {");
+      expect(content).toContain("cameras: {");
       expect(content).toContain("stream: (init?: RequestInit)");
       expect(content).toContain('this.rawRequest("api.cameras.stream"');
 
-      expect(content).toContain("files = {");
+      expect(content).toContain("files: {");
       expect(content).toContain("download: (init?: RequestInit)");
       expect(content).toContain('this.rawRequest("api.files.download"');
 
@@ -132,7 +132,7 @@ describe("Client Generator", () => {
       const content = await readFile(TEST_OUTPUT_PATH, "utf-8");
 
       // All routes should be in the same namespace
-      expect(content).toContain("media = {");
+      expect(content).toContain("media: {");
 
       // Typed routes
       expect(content).toContain('list: (input:');
@@ -174,7 +174,7 @@ describe("Client Generator", () => {
       const content = await readFile(TEST_OUTPUT_PATH, "utf-8");
 
       // Should generate types for typed route
-      expect(content).toContain("export namespace Users");
+      expect(content).toContain("export namespace ApiUsers");
       expect(content).toContain("export namespace Get");
       expect(content).toContain("export type Input");
       expect(content).toContain("export type Output");
@@ -208,7 +208,7 @@ describe("Client Generator", () => {
       const content = await readFile(TEST_OUTPUT_PATH, "utf-8");
 
       // Should still generate a namespace for the routes
-      expect(content).toContain("webhooks = {");
+      expect(content).toContain("webhooks: {");
       expect(content).toContain('stripe: (init?: RequestInit): Promise<Response> => this.rawRequest("api.webhooks.stripe"');
       expect(content).toContain('github: (init?: RequestInit): Promise<Response> => this.rawRequest("api.webhooks.github"');
 
@@ -235,7 +235,7 @@ describe("Client Generator", () => {
       expect(content).toContain('this.rawRequest("api.data.export"');
 
       // But the client namespace should be simplified
-      expect(content).toContain("data = {");
+      expect(content).toContain("data: {");
       expect(content).toContain("export:");
 
       await cleanup();
@@ -268,9 +268,9 @@ describe("Client Generator", () => {
 
       // Should generate method object with fetch, url, get methods
       expect(content).toContain("download: {");
-      expect(content).toContain("fetch: (input: Routes.Files.Download.Input, options?: RequestOptions): Promise<Response> => this.streamRequest(");
-      expect(content).toContain("url: (input: Routes.Files.Download.Input): string => this.streamUrl(");
-      expect(content).toContain("get: (input: Routes.Files.Download.Input, options?: RequestOptions): Promise<Response> => this.streamGet(");
+      expect(content).toContain("fetch: (input: Routes.ApiFiles.Download.Input, options?: RequestOptions): Promise<Response> => this.streamRequest(");
+      expect(content).toContain("url: (input: Routes.ApiFiles.Download.Input): string => this.streamUrl(");
+      expect(content).toContain("get: (input: Routes.ApiFiles.Download.Input, options?: RequestOptions): Promise<Response> => this.streamGet(");
 
       await cleanup();
     });
@@ -312,7 +312,7 @@ describe("Client Generator", () => {
 
       // Stream route generates object with fetch, url, get methods
       expect(content).toContain("stream: {");
-      expect(content).toContain("fetch: (input: Routes.Media.Stream.Input, options?: RequestOptions): Promise<Response> => this.streamRequest(");
+      expect(content).toContain("fetch: (input: Routes.ApiMedia.Stream.Input, options?: RequestOptions): Promise<Response> => this.streamRequest(");
       expect(content).toContain('this.streamRequest("api.media.stream"');
 
       // Raw route uses rawRequest()
@@ -355,7 +355,7 @@ describe("Client Generator", () => {
       expect(content).toMatch(/namespace Get[\s\S]*?Input[\s\S]*?Output/);
 
       // Stream route has only Input
-      expect(content).toContain("Routes.Data.Export.Input");
+      expect(content).toContain("Routes.ApiData.Export.Input");
 
       await cleanup();
     });
@@ -395,7 +395,7 @@ describe("Client Generator", () => {
       expect(content).toContain("urgent: boolean");
 
       // Should generate method using sseConnect with SSEConnection return type
-      expect(content).toContain("subscribe: (input: Routes.Notifications.Subscribe.Input): SSEConnection<Routes.Notifications.Subscribe.Events>");
+      expect(content).toContain("subscribe: (input: Routes.ApiNotifications.Subscribe.Input, options?: SSEConnectionOptions): SSEConnection<Routes.ApiNotifications.Subscribe.Events>");
       expect(content).toContain('this.sseConnect("api.notifications.subscribe"');
 
       // Should import SSEConnection
@@ -426,7 +426,7 @@ describe("Client Generator", () => {
       expect(content).toContain("export type Events = Record<string, unknown>");
 
       // Should still return SSEConnection with the Events type
-      expect(content).toContain("SSEConnection<Routes.Stream.Subscribe.Events>");
+      expect(content).toContain("SSEConnection<Routes.ApiStream.Subscribe.Events>");
 
       await cleanup();
     });

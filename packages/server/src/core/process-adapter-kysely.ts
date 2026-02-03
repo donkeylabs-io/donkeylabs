@@ -43,6 +43,7 @@ export class KyselyProcessAdapter implements ProcessAdapter {
   private db: Kysely<Database>;
   private cleanupTimer?: ReturnType<typeof setInterval>;
   private cleanupDays: number;
+  private stopped = false;
 
   constructor(db: Kysely<any>, config: KyselyProcessAdapterConfig = {}) {
     this.db = db as Kysely<Database>;
@@ -57,7 +58,16 @@ export class KyselyProcessAdapter implements ProcessAdapter {
     }
   }
 
+  /** Check if adapter is stopped (for safe database access) */
+  private checkStopped(): boolean {
+    return this.stopped;
+  }
+
   async create(process: Omit<ManagedProcess, "id">): Promise<ManagedProcess> {
+    if (this.checkStopped()) {
+      throw new Error("ProcessAdapter has been stopped");
+    }
+
     const id = `proc_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
     await this.db
@@ -85,17 +95,27 @@ export class KyselyProcessAdapter implements ProcessAdapter {
   }
 
   async get(processId: string): Promise<ManagedProcess | null> {
-    const row = await this.db
-      .selectFrom("__donkeylabs_processes__")
-      .selectAll()
-      .where("id", "=", processId)
-      .executeTakeFirst();
+    if (this.checkStopped()) return null;
 
-    if (!row) return null;
-    return this.rowToProcess(row);
+    try {
+      const row = await this.db
+        .selectFrom("__donkeylabs_processes__")
+        .selectAll()
+        .where("id", "=", processId)
+        .executeTakeFirst();
+
+      if (!row) return null;
+      return this.rowToProcess(row);
+    } catch (err: any) {
+      // Silently ignore errors if adapter was stopped during query
+      if (this.stopped && err?.message?.includes("destroyed")) return null;
+      throw err;
+    }
   }
 
   async update(processId: string, updates: Partial<ManagedProcess>): Promise<void> {
+    if (this.checkStopped()) return;
+
     const updateData: Partial<ProcessesTable> = {};
 
     if (updates.pid !== undefined) {
@@ -137,14 +157,22 @@ export class KyselyProcessAdapter implements ProcessAdapter {
 
     if (Object.keys(updateData).length === 0) return;
 
-    await this.db
-      .updateTable("__donkeylabs_processes__")
-      .set(updateData)
-      .where("id", "=", processId)
-      .execute();
+    try {
+      await this.db
+        .updateTable("__donkeylabs_processes__")
+        .set(updateData)
+        .where("id", "=", processId)
+        .execute();
+    } catch (err: any) {
+      // Silently ignore errors if adapter was stopped during query
+      if (this.stopped && err?.message?.includes("destroyed")) return;
+      throw err;
+    }
   }
 
   async delete(processId: string): Promise<boolean> {
+    if (this.checkStopped()) return false;
+
     // Check if exists first since BunSqliteDialect doesn't report numDeletedRows properly
     const exists = await this.db
       .selectFrom("__donkeylabs_processes__")
@@ -163,6 +191,8 @@ export class KyselyProcessAdapter implements ProcessAdapter {
   }
 
   async getByName(name: string): Promise<ManagedProcess[]> {
+    if (this.checkStopped()) return [];
+
     const rows = await this.db
       .selectFrom("__donkeylabs_processes__")
       .selectAll()
@@ -174,18 +204,28 @@ export class KyselyProcessAdapter implements ProcessAdapter {
   }
 
   async getRunning(): Promise<ManagedProcess[]> {
-    const rows = await this.db
-      .selectFrom("__donkeylabs_processes__")
-      .selectAll()
-      .where((eb) =>
-        eb.or([eb("status", "=", "running"), eb("status", "=", "spawning")])
-      )
-      .execute();
+    if (this.checkStopped()) return [];
 
-    return rows.map((r) => this.rowToProcess(r));
+    try {
+      const rows = await this.db
+        .selectFrom("__donkeylabs_processes__")
+        .selectAll()
+        .where((eb) =>
+          eb.or([eb("status", "=", "running"), eb("status", "=", "spawning")])
+        )
+        .execute();
+
+      return rows.map((r) => this.rowToProcess(r));
+    } catch (err: any) {
+      // Silently ignore errors if adapter was stopped during query
+      if (this.stopped && err?.message?.includes("destroyed")) return [];
+      throw err;
+    }
   }
 
   async getOrphaned(): Promise<ManagedProcess[]> {
+    if (this.checkStopped()) return [];
+
     const rows = await this.db
       .selectFrom("__donkeylabs_processes__")
       .selectAll()
@@ -223,7 +263,7 @@ export class KyselyProcessAdapter implements ProcessAdapter {
 
   /** Clean up old stopped/crashed processes */
   private async cleanup(): Promise<void> {
-    if (this.cleanupDays <= 0) return;
+    if (this.cleanupDays <= 0 || this.checkStopped()) return;
 
     try {
       const cutoff = new Date();
@@ -252,6 +292,7 @@ export class KyselyProcessAdapter implements ProcessAdapter {
 
   /** Stop the adapter and cleanup timer */
   stop(): void {
+    this.stopped = true;
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
       this.cleanupTimer = undefined;

@@ -132,6 +132,7 @@ export {
 export {
   type Workflows,
   type WorkflowsConfig,
+  type WorkflowRegisterOptions,
   type WorkflowDefinition,
   type WorkflowInstance,
   type WorkflowStatus,
@@ -153,6 +154,30 @@ export {
   workflow,
   createWorkflows,
 } from "./workflows";
+
+export {
+  type WorkflowSocketServer,
+  type WorkflowSocketServerOptions,
+  type WorkflowSocketConfig,
+  type WorkflowEvent,
+  type WorkflowEventType,
+  type ProxyRequest,
+  type ProxyResponse,
+  type WorkflowMessage,
+  createWorkflowSocketServer,
+  isWorkflowEvent,
+  isProxyRequest,
+  parseWorkflowMessage,
+} from "./workflow-socket";
+
+export {
+  type ProxyConnection,
+  WorkflowProxyConnection,
+  createPluginProxy,
+  createCoreProxy,
+  createPluginsProxy,
+  createCoreServicesProxy,
+} from "./workflow-proxy";
 
 export {
   type Processes,

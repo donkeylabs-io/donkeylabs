@@ -305,4 +305,14 @@ export class SqliteJobAdapter implements JobAdapter {
       this.cleanupTimer = undefined;
     }
   }
+
+  /** Atomically claim a pending job (returns true if successfully claimed) */
+  async claim(jobId: string): Promise<boolean> {
+    // Use WHERE status = 'pending' for atomicity - only one process can claim
+    const result = this.db.run(
+      `UPDATE jobs SET status = 'running', started_at = ? WHERE id = ? AND status = 'pending'`,
+      [new Date().toISOString(), jobId]
+    );
+    return result.changes > 0;
+  }
 }

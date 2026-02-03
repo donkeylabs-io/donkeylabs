@@ -1,4 +1,0 @@
-node_modules/
-.@donkeylabs/
-*.db
-.env

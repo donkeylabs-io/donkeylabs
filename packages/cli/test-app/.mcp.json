@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "donkeylabs": {
+      "command": "bunx",
+      "args": [
+        "-y",
+        "@donkeylabs/mcp"
+      ],
+      "env": {
+        "DONKEYLABS_MCP": "true"
+      }
+    }
+  }
+}
