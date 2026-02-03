@@ -23,41 +23,60 @@ interface DocsCommandOptions {
 }
 
 /**
- * Find the docs directory from installed @donkeylabs/server
+ * Find the server package directory from installed @donkeylabs/server
  */
-function findDocsPath(): string | null {
-  // Try common locations
+function findServerPkgDir(): string | null {
   const possiblePaths = [
-    // node_modules (standard install)
-    join(process.cwd(), "node_modules", "@donkeylabs", "server", "docs"),
-    // bun's .bun cache
-    join(process.cwd(), "node_modules", ".bun", "@donkeylabs", "server", "docs"),
-    // Workspace/monorepo
-    join(process.cwd(), "..", "server", "docs"),
-    join(process.cwd(), "..", "..", "packages", "server", "docs"),
+    join(process.cwd(), "node_modules", "@donkeylabs", "server"),
+    join(process.cwd(), "node_modules", ".bun", "@donkeylabs", "server"),
+    join(process.cwd(), "..", "server"),
+    join(process.cwd(), "..", "..", "packages", "server"),
   ];
 
   for (const path of possiblePaths) {
-    if (existsSync(path) && statSync(path).isDirectory()) {
+    const docsDir = join(path, "docs");
+    if (existsSync(docsDir) && statSync(docsDir).isDirectory()) {
       return path;
     }
   }
 
-  // Try to resolve from require
   try {
     const serverPkgPath = require.resolve("@donkeylabs/server/package.json", {
       paths: [process.cwd()],
     });
     const serverDir = dirname(serverPkgPath);
-    const docsPath = join(serverDir, "docs");
-    if (existsSync(docsPath)) {
-      return docsPath;
+    if (existsSync(join(serverDir, "docs"))) {
+      return serverDir;
     }
   } catch {
     // Package not found
   }
 
   return null;
+}
+
+/**
+ * Find the docs directory from installed @donkeylabs/server
+ */
+function findDocsPath(): string | null {
+  const serverDir = findServerPkgDir();
+  if (!serverDir) return null;
+  return join(serverDir, "docs");
+}
+
+/**
+ * Sync agents.md from the server package root to the project root
+ */
+function syncAgentsMd(): void {
+  const serverDir = findServerPkgDir();
+  if (!serverDir) return;
+
+  const agentsMdSrc = join(serverDir, "agents.md");
+  if (!existsSync(agentsMdSrc)) return;
+
+  const content = readFileSync(agentsMdSrc, "utf-8");
+  writeFileSync(join(process.cwd(), "agents.md"), content);
+  console.log(pc.green("✓ Synced agents.md"));
 }
 
 /**
@@ -201,6 +220,7 @@ export async function docsCommand(args: string[], options: DocsCommandOptions = 
   console.log(pc.dim(`Target: ${outputDir}/\n`));
 
   const synced = syncAllDocs(docsPath, outputDir);
+  syncAgentsMd();
 
   console.log(pc.green(`\n✓ Synced ${synced} documentation files to ${outputDir}/`));
   console.log(pc.dim(`\nTip: Add ${outputDir}/ to your .gitignore if you don't want to commit docs.`));

@@ -167,7 +167,7 @@ export async function initCommand(args: string[]) {
   } else {
     console.log(pc.green("\n✓ Dependencies installed\n"));
 
-    // Copy CLAUDE.md and docs/ from @donkeylabs/server to project root
+    // Copy agents.md and docs/ from @donkeylabs/server to project root
     await copyDocsFromServer(targetDir);
   }
 
@@ -324,7 +324,7 @@ async function copyDirectory(src: string, dest: string): Promise<void> {
 }
 
 /**
- * Copy CLAUDE.md and docs/ from @donkeylabs/server to project root
+ * Copy agents.md and docs/ from @donkeylabs/server to project root
  * for AI-assisted development
  */
 async function copyDocsFromServer(targetDir: string): Promise<void> {
@@ -334,19 +334,19 @@ async function copyDocsFromServer(targetDir: string): Promise<void> {
     return; // Server package not installed
   }
 
-  // Copy CLAUDE.md
-  const claudeMdSrc = join(serverPkgPath, "CLAUDE.md");
-  if (existsSync(claudeMdSrc)) {
-    const claudeMdDest = join(targetDir, "CLAUDE.md");
-    await copyFile(claudeMdSrc, claudeMdDest);
-    console.log(pc.green("  Created:"), "CLAUDE.md (AI instructions)");
+  // Copy agents.md
+  const agentsMdSrc = join(serverPkgPath, "agents.md");
+  if (existsSync(agentsMdSrc)) {
+    const agentsMdDest = join(targetDir, "agents.md");
+    await copyFile(agentsMdSrc, agentsMdDest);
+    console.log(pc.green("  Created:"), "agents.md (AI instructions)");
   }
 
   // Copy docs/ directory
   const docsSrc = join(serverPkgPath, "docs");
   if (existsSync(docsSrc)) {
-    const docsDest = join(targetDir, "docs");
+    const docsDest = join(targetDir, "docs", "donkeylabs");
     await copyDirectory(docsSrc, docsDest);
-    console.log(pc.green("  Created:"), "docs/ (detailed documentation)");
+    console.log(pc.green("  Created:"), "docs/donkeylabs/ (detailed documentation)");
   }
 }
