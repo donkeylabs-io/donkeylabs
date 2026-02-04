@@ -1475,6 +1475,53 @@ class WorkflowsImpl implements Workflows {
         break;
       }
 
+      case "event": {
+        const workflowName = event.workflowName ?? (await this.adapter.getInstance(instanceId))?.workflowName;
+        const payload = {
+          instanceId,
+          workflowName,
+          event: event.event,
+          data: event.data,
+        };
+
+        await this.emitEvent("workflow.event", payload);
+        if (workflowName) {
+          await this.emitEvent(`workflow.${workflowName}.event`, payload);
+        }
+        await this.emitEvent(`workflow.${instanceId}.event`, payload);
+
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${instanceId}`, "event", payload);
+          this.sse.broadcast("workflows:all", "workflow.event", payload);
+        }
+        break;
+      }
+
+      case "log": {
+        const workflowName = event.workflowName ?? (await this.adapter.getInstance(instanceId))?.workflowName;
+
+        if (this.core?.logs && event.level && event.message) {
+          this.core.logs.write({
+            level: event.level,
+            message: event.message,
+            source: "workflow",
+            sourceId: instanceId,
+            data: event.data,
+            context: workflowName ? { workflowName } : undefined,
+          });
+        }
+
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${instanceId}`, "log", {
+            level: event.level,
+            message: event.message,
+            data: event.data,
+            workflowName,
+          });
+        }
+        break;
+      }
+
       case "completed": {
         // Clean up isolated process tracking
         this.cleanupIsolatedProcess(instanceId);

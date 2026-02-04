@@ -6,7 +6,6 @@ import { Kysely } from "kysely";
 import { BunSqliteDialect } from "kysely-bun-sqlite";
 import Database from "bun:sqlite";
 import {
-  createEvents,
   createJobs,
   createSSE,
   createWorkflows,
@@ -14,7 +13,11 @@ import {
   KyselyWorkflowAdapter,
 } from "../src/core/index";
 import { MemoryWorkflowAdapter } from "../src/core/workflows";
-import { initProbePlugin, initProbeWorkflow } from "./fixtures/isolated-workflow";
+import { initProbePlugin, initProbeWorkflow, eventProbeWorkflow } from "./fixtures/isolated-workflow";
+import { createLogs, MemoryLogsAdapter } from "../src/core/logs";
+import { createLogger } from "../src/core/logger";
+import { PersistentTransport } from "../src/core/logs-transport";
+import { createEvents, MemoryEventAdapter } from "../src/core/events";
 
 const fixtureUrl = new URL("./fixtures/isolated-workflow.ts", import.meta.url).href;
 
@@ -66,6 +69,76 @@ describe("isolated workflows", () => {
 
     await workflows.stop();
     await jobs.stop();
+    await db.destroy();
+    sqlite.close();
+    await unlink(dbPath).catch(() => undefined);
+  });
+
+  it("forwards custom events and logs from isolated workflows", async () => {
+    const dbPath = join(
+      tmpdir(),
+      `donkeylabs-isolated-events-${Date.now()}-${Math.random().toString(36).slice(2)}.db`
+    );
+    const sqlite = new Database(dbPath);
+    const db = new Kysely<any>({
+      dialect: new BunSqliteDialect({ database: sqlite }),
+    });
+
+    await createWorkflowTables(db);
+    await createJobsTable(db);
+
+    const events = createEvents({ adapter: new MemoryEventAdapter() });
+    const logs = createLogs({
+      adapter: new MemoryLogsAdapter(),
+      events,
+      flushInterval: 5,
+      maxBufferSize: 1,
+      minLevel: "debug",
+    });
+    const logger = createLogger({
+      transports: [new PersistentTransport(logs, { minLevel: "debug" })],
+    });
+
+    const sse = createSSE();
+    const jobs = createJobs({
+      events,
+      adapter: new KyselyJobAdapter(db, { cleanupDays: 0 }),
+      persist: false,
+    });
+    const workflows = createWorkflows({
+      events,
+      jobs,
+      sse,
+      adapter: new KyselyWorkflowAdapter(db, { cleanupDays: 0 }),
+      dbPath,
+    });
+
+    workflows.setCore({ logger, events, logs } as any);
+    workflows.setPlugins({});
+
+    workflows.register(eventProbeWorkflow, { modulePath: fixtureUrl });
+    workflows.setPluginMetadata({
+      names: [],
+      modulePaths: {},
+      configs: {},
+      dependencies: {},
+      customErrors: {},
+    });
+
+    const instanceId = await workflows.start("event-probe-workflow", {});
+    await waitForWorkflowCompletion(workflows, instanceId);
+
+    await logs.flush();
+
+    const customHistory = await events.getHistory(`workflow.${instanceId}.event`, 5);
+    expect(customHistory[0]?.data?.event).toBe("custom");
+
+    const logHistory = await events.getHistory(`log.workflow.${instanceId}`, 5);
+    expect(logHistory.length).toBeGreaterThan(0);
+
+    await workflows.stop();
+    await jobs.stop();
+    logs.stop();
     await db.destroy();
     sqlite.close();
     await unlink(dbPath).catch(() => undefined);

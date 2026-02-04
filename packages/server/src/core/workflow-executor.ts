@@ -91,6 +91,27 @@ async function main(): Promise<void> {
       plugins: bootstrap.manager.getServices(),
       events: createIpcEventBridge(socket, instanceId),
       pollInterval: 1000,
+      emitCustomEvent: async (payload) => {
+        sendEvent(socket, {
+          type: "event",
+          instanceId: payload.instanceId,
+          workflowName: payload.workflowName,
+          timestamp: Date.now(),
+          event: payload.event,
+          data: payload.data,
+        });
+      },
+      emitLog: async (payload) => {
+        sendEvent(socket, {
+          type: "log",
+          instanceId: payload.instanceId,
+          workflowName: payload.workflowName,
+          timestamp: Date.now(),
+          level: payload.level,
+          message: payload.message,
+          data: payload.data,
+        });
+      },
     });
 
     sendEvent(socket, {

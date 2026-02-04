@@ -45,6 +45,19 @@ export interface StateMachineConfig {
   jobs?: Jobs;
   /** Poll interval for checking job completion (ms) */
   pollInterval?: number;
+  emitCustomEvent?: (payload: {
+    instanceId: string;
+    workflowName: string;
+    event: string;
+    data?: Record<string, any>;
+  }) => Promise<void>;
+  emitLog?: (payload: {
+    instanceId: string;
+    workflowName: string;
+    level: LogLevel;
+    message: string;
+    data?: Record<string, any>;
+  }) => Promise<void>;
 }
 
 // ============================================
@@ -58,6 +71,8 @@ export class WorkflowStateMachine {
   private events: StateMachineEvents;
   private jobs?: Jobs;
   private pollInterval: number;
+  private emitCustomEvent?: StateMachineConfig["emitCustomEvent"];
+  private emitLog?: StateMachineConfig["emitLog"];
   private cancelledInstances = new Set<string>();
 
   constructor(config: StateMachineConfig) {
@@ -67,6 +82,8 @@ export class WorkflowStateMachine {
     this.events = config.events;
     this.jobs = config.jobs;
     this.pollInterval = config.pollInterval ?? 1000;
+    this.emitCustomEvent = config.emitCustomEvent;
+    this.emitLog = config.emitLog;
   }
 
   /**
@@ -484,26 +501,39 @@ export class WorkflowStateMachine {
     const instanceId = instance.id;
 
     const scopedLogger = this.core?.logger?.scoped("workflow", instance.id);
-    const emit = this.core?.events
-      ? async (event: string, data?: Record<string, any>) => {
-          const payload = {
-            instanceId: instance.id,
-            workflowName: instance.workflowName,
-            event,
-            data,
-          };
+    const emit = async (event: string, data?: Record<string, any>) => {
+      const payload = {
+        instanceId: instance.id,
+        workflowName: instance.workflowName,
+        event,
+        data,
+      };
 
-          await this.core!.events.emit("workflow.event", payload);
-          await this.core!.events.emit(`workflow.${instance.workflowName}.event`, payload);
-          await this.core!.events.emit(`workflow.${instance.id}.event`, payload);
-        }
-      : undefined;
+      if (this.core?.events) {
+        await this.core.events.emit("workflow.event", payload);
+        await this.core.events.emit(`workflow.${instance.workflowName}.event`, payload);
+        await this.core.events.emit(`workflow.${instance.id}.event`, payload);
+      }
 
-    const log = scopedLogger
-      ? (level: LogLevel, message: string, data?: Record<string, any>) => {
-          scopedLogger[level](message, data);
-        }
-      : undefined;
+      if (this.emitCustomEvent) {
+        await this.emitCustomEvent(payload);
+      }
+    };
+
+    const log = (level: LogLevel, message: string, data?: Record<string, any>) => {
+      if (scopedLogger) {
+        scopedLogger[level](message, data);
+      }
+      if (this.emitLog) {
+        return this.emitLog({
+          instanceId: instance.id,
+          workflowName: instance.workflowName,
+          level,
+          message,
+          data,
+        });
+      }
+    };
 
     const core = this.core
       ? {

@@ -11,6 +11,8 @@ import { createServer as createNetServer } from "node:net";
 // Message Protocol Types
 // ============================================
 
+import type { LogLevel } from "./logger";
+
 export type WorkflowEventType =
   | "ready"
   | "started"
@@ -20,11 +22,14 @@ export type WorkflowEventType =
   | "step.failed"
   | "progress"
   | "completed"
-  | "failed";
+  | "failed"
+  | "event"
+  | "log";
 
 export interface WorkflowEvent {
   type: WorkflowEventType;
   instanceId: string;
+  workflowName?: string;
   timestamp: number;
   stepName?: string;
   /** Step type (for step.started events) */
@@ -36,6 +41,14 @@ export interface WorkflowEvent {
   totalSteps?: number;
   /** Next step to execute (for step.completed events) */
   nextStep?: string;
+  /** Custom event name (for event type) */
+  event?: string;
+  /** Custom event payload or log data */
+  data?: Record<string, any>;
+  /** Log level (for log type) */
+  level?: LogLevel;
+  /** Log message (for log type) */
+  message?: string;
 }
 
 export interface ProxyRequest {

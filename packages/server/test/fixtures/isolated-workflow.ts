@@ -26,3 +26,13 @@ export const initProbeWorkflow = workflow("init-probe-workflow")
     },
   })
   .build();
+
+export const eventProbeWorkflow = workflow("event-probe-workflow")
+  .task("emit", {
+    handler: async (_input, ctx) => {
+      ctx.log?.("info", "workflow log", { probe: true });
+      await ctx.emit?.("custom", { ok: true });
+      return { ok: true };
+    },
+  })
+  .build();
