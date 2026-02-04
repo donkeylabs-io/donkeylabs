@@ -80,6 +80,7 @@ export class KyselyLogsAdapter implements LogsAdapter {
     // Enable WAL mode for better concurrent read/write performance
     sqliteDb.exec("PRAGMA journal_mode = WAL");
     sqliteDb.exec("PRAGMA synchronous = NORMAL");
+    sqliteDb.exec("PRAGMA busy_timeout = 5000");
 
     this.db = new Kysely<Database>({
       dialect: new SqliteDialect({

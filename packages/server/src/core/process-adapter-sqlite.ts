@@ -52,6 +52,7 @@ export class SqliteProcessAdapter implements ProcessAdapter {
     this.ensureDir(dbPath);
 
     this.db = new Database(dbPath);
+    this.db.run("PRAGMA busy_timeout = 5000");
     this.init();
 
     // Start cleanup timer

@@ -649,7 +649,11 @@ export interface WorkflowsConfig {
   heartbeatTimeout?: number;
   /** Timeout waiting for isolated subprocess readiness (ms, default: 10000) */
   readyTimeout?: number;
+  /** Resume strategy for orphaned workflows (default: "blocking") */
+  resumeStrategy?: WorkflowResumeStrategy;
 }
+
+export type WorkflowResumeStrategy = "blocking" | "background" | "skip";
 
 /** Options for registering a workflow */
 export interface WorkflowRegisterOptions {
@@ -687,7 +691,7 @@ export interface Workflows {
   /** Get all workflow instances with optional filtering (for admin dashboard) */
   getAllInstances(options?: GetAllWorkflowsOptions): Promise<WorkflowInstance[]>;
   /** Resume workflows after server restart */
-  resume(): Promise<void>;
+  resume(options?: { strategy?: WorkflowResumeStrategy }): Promise<void>;
   /** Stop the workflow service */
   stop(): Promise<void>;
   /** Set core services (called after initialization to resolve circular dependency) */
@@ -739,6 +743,7 @@ class WorkflowsImpl implements Workflows {
   private dbPath?: string;
   private heartbeatTimeoutMs: number;
   private readyTimeoutMs: number;
+  private resumeStrategy!: WorkflowResumeStrategy;
   private workflowModulePaths = new Map<string, string>();
   private isolatedProcesses = new Map<string, IsolatedProcessInfo>();
   private readyWaiters = new Map<
@@ -772,6 +777,7 @@ class WorkflowsImpl implements Workflows {
     this.dbPath = config.dbPath;
     this.heartbeatTimeoutMs = config.heartbeatTimeout ?? 60000;
     this.readyTimeoutMs = config.readyTimeout ?? 10000;
+    this.resumeStrategy = config.resumeStrategy ?? "blocking";
   }
 
   private getSocketServer(): WorkflowSocketServer {
@@ -975,38 +981,64 @@ class WorkflowsImpl implements Workflows {
     return this.adapter.getAllInstances(options);
   }
 
-  async resume(): Promise<void> {
+  async resume(options?: { strategy?: WorkflowResumeStrategy }): Promise<void> {
+    const strategy = options?.strategy ?? this.resumeStrategy;
     const running = await this.adapter.getRunningInstances();
 
-    for (const instance of running) {
+    if (this.dbPath) {
+      await this.getSocketServer().cleanOrphanedSockets(
+        new Set(running.map((instance) => instance.id))
+      );
+    }
+
+    if (strategy === "skip") {
+      await this.markOrphanedAsFailed(running, "Workflow resume skipped");
+      return;
+    }
+
+    const resumeInstance = async (instance: WorkflowInstance) => {
       const definition = this.definitions.get(instance.workflowName);
       if (!definition) {
-        // Workflow no longer registered, mark as failed
         await this.adapter.updateInstance(instance.id, {
           status: "failed",
           error: "Workflow definition not found after restart",
           completedAt: new Date(),
         });
-        continue;
+        return;
       }
 
       console.log(`[Workflows] Resuming workflow instance ${instance.id}`);
 
-      // Check isolation mode and call appropriate method
       const isIsolated = definition.isolated !== false;
       const modulePath = this.workflowModulePaths.get(instance.workflowName);
 
       if (isIsolated && modulePath && this.dbPath) {
-        try {
-          await this.executeIsolatedWorkflow(instance.id, definition, instance.input, modulePath);
-        } catch (error) {
-          console.error(
-            `[Workflows] Failed to resume isolated workflow ${instance.id}:`,
-            error instanceof Error ? error.message : String(error)
-          );
-        }
+        await this.executeIsolatedWorkflow(instance.id, definition, instance.input, modulePath);
       } else {
         this.startInlineWorkflow(instance.id, definition);
+      }
+    };
+
+    if (strategy === "background") {
+      for (const instance of running) {
+        resumeInstance(instance).catch((error) => {
+          console.error(
+            `[Workflows] Failed to resume workflow ${instance.id}:`,
+            error instanceof Error ? error.message : String(error)
+          );
+        });
+      }
+      return;
+    }
+
+    for (const instance of running) {
+      try {
+        await resumeInstance(instance);
+      } catch (error) {
+        console.error(
+          `[Workflows] Failed to resume workflow ${instance.id}:`,
+          error instanceof Error ? error.message : String(error)
+        );
       }
     }
   }
@@ -1708,6 +1740,34 @@ class WorkflowsImpl implements Workflows {
       this.isolatedProcesses.delete(instanceId);
     }
     this.rejectIsolatedReady(instanceId, new Error("Isolated workflow cleaned up"));
+  }
+
+  private async markOrphanedAsFailed(
+    instances: WorkflowInstance[],
+    reason: string
+  ): Promise<void> {
+    for (const instance of instances) {
+      await this.adapter.updateInstance(instance.id, {
+        status: "failed",
+        error: reason,
+        completedAt: new Date(),
+      });
+
+      await this.emitEvent("workflow.failed", {
+        instanceId: instance.id,
+        workflowName: instance.workflowName,
+        error: reason,
+      });
+
+      if (this.sse) {
+        this.sse.broadcast(`workflow:${instance.id}`, "failed", { error: reason });
+        this.sse.broadcast("workflows:all", "workflow.failed", {
+          instanceId: instance.id,
+          workflowName: instance.workflowName,
+          error: reason,
+        });
+      }
+    }
   }
 
   /**

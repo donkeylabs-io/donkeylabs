@@ -81,6 +81,11 @@ export interface ServerConfig {
   rateLimiter?: RateLimiterConfig;
   errors?: ErrorsConfig;
   workflows?: WorkflowsConfig;
+  /**
+   * Resume strategy for workflows on startup.
+   * Defaults to "blocking" for server mode and "background" for adapter mode.
+   */
+  workflowsResumeStrategy?: "blocking" | "background" | "skip";
   processes?: ProcessesConfig;
   audit?: AuditConfig;
   websocket?: WebSocketConfig;
@@ -214,6 +219,8 @@ export class AppServer {
   private isInitialized = false;
   private initializationPromise: Promise<void> | null = null;
   private generateModeSetup = false;
+  private initMode: "adapter" | "server" = "server";
+  private workflowsResumeStrategy?: "blocking" | "background" | "skip";
 
   // Custom services registry
   private serviceFactories = new Map<string, ServiceFactory<any>>();
@@ -225,6 +232,7 @@ export class AppServer {
     const envPort = process.env.PORT ? parseInt(process.env.PORT, 10) : undefined;
     this.port = options.port ?? envPort ?? 3000;
     this.maxPortAttempts = options.maxPortAttempts ?? 5;
+    this.workflowsResumeStrategy = options.workflowsResumeStrategy ?? options.workflows?.resumeStrategy;
 
     // Determine if we should use legacy databases
     const useLegacy = options.useLegacyCoreDatabases ?? false;
@@ -986,6 +994,7 @@ ${factoryFunction}
    * Used by adapters (e.g., SvelteKit) that manage their own HTTP server.
    */
   async initialize(): Promise<void> {
+    this.initMode = "adapter";
     // Handle CLI type generation mode - exit early before any initialization
     if (process.env.DONKEYLABS_GENERATE === "1") {
       this.outputRoutesForGeneration();
@@ -1038,7 +1047,13 @@ ${factoryFunction}
     this.coreServices.cron.start();
     this.coreServices.jobs.start();
     await this.coreServices.workflows.resolveDbPath();
-    await this.coreServices.workflows.resume();
+    const defaultStrategy = this.initMode === "adapter" ? "background" : undefined;
+    const strategy = this.workflowsResumeStrategy ?? defaultStrategy;
+    if (strategy) {
+      await this.coreServices.workflows.resume({ strategy });
+    } else {
+      await this.coreServices.workflows.resume();
+    }
     this.coreServices.processes.start();
     logger.info("Background services started (cron, jobs, workflows, processes)");
 
@@ -1252,6 +1267,7 @@ ${factoryFunction}
    * 5. Start the HTTP server
    */
   async start() {
+    this.initMode = "server";
     // Handle CLI type generation mode - exit early before any initialization
     if (process.env.DONKEYLABS_GENERATE === "1") {
       this.outputRoutesForGeneration();
