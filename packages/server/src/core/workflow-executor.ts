@@ -184,6 +184,27 @@ function createIpcEventBridge(socket: Socket, instanceId: string): StateMachineE
         error,
       });
     },
+    onStepPoll: (id, stepName, pollCount, done, result) => {
+      sendEvent(socket, {
+        type: "step.poll",
+        instanceId: id,
+        timestamp: Date.now(),
+        stepName,
+        pollCount,
+        done,
+        result,
+      });
+    },
+    onStepLoop: (id, stepName, loopCount, target) => {
+      sendEvent(socket, {
+        type: "step.loop",
+        instanceId: id,
+        timestamp: Date.now(),
+        stepName,
+        loopCount,
+        target,
+      });
+    },
     onStepRetry: () => {
       // Retry is internal to the state machine - no IPC event needed
     },

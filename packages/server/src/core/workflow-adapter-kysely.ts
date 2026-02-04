@@ -258,6 +258,11 @@ export class KyselyWorkflowAdapter implements WorkflowAdapter {
         startedAt: sr.startedAt ? new Date(sr.startedAt) : undefined,
         completedAt: sr.completedAt ? new Date(sr.completedAt) : undefined,
         attempts: sr.attempts,
+        pollCount: sr.pollCount,
+        lastPolledAt: sr.lastPolledAt ? new Date(sr.lastPolledAt) : undefined,
+        loopCount: sr.loopCount,
+        lastLoopedAt: sr.lastLoopedAt ? new Date(sr.lastLoopedAt) : undefined,
+        loopStartedAt: sr.loopStartedAt ? new Date(sr.loopStartedAt) : undefined,
       };
     }
 

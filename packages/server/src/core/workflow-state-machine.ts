@@ -12,6 +12,8 @@ import type {
   WorkflowContext,
   StepDefinition,
   TaskStepDefinition,
+  LoopStepDefinition,
+  PollStepDefinition,
   ParallelStepDefinition,
   ChoiceStepDefinition,
   PassStepDefinition,
@@ -28,6 +30,8 @@ export interface StateMachineEvents {
   onStepCompleted(instanceId: string, stepName: string, output: any, nextStep?: string): void;
   onStepFailed(instanceId: string, stepName: string, error: string, attempts: number): void;
   onStepRetry(instanceId: string, stepName: string, attempt: number, max: number, delayMs: number): void;
+  onStepPoll(instanceId: string, stepName: string, pollCount: number, done: boolean, result?: any): void;
+  onStepLoop(instanceId: string, stepName: string, loopCount: number, target: string): void;
   onProgress(instanceId: string, progress: number, currentStep: string, completed: number, total: number): void;
   onCompleted(instanceId: string, output: any): void;
   onFailed(instanceId: string, error: string): void;
@@ -136,11 +140,17 @@ export class WorkflowStateMachine {
       this.events.onStepStarted(instanceId, stepName, step.type);
 
       // Update step result as running
+      const previousStep = freshInstance.stepResults[stepName];
       const stepResult: StepResult = {
         stepName,
         status: "running",
-        startedAt: new Date(),
-        attempts: (freshInstance.stepResults[stepName]?.attempts ?? 0) + 1,
+        startedAt: previousStep?.startedAt ?? new Date(),
+        attempts: (previousStep?.attempts ?? 0) + 1,
+        pollCount: previousStep?.pollCount,
+        lastPolledAt: previousStep?.lastPolledAt,
+        loopCount: previousStep?.loopCount,
+        lastLoopedAt: previousStep?.lastLoopedAt,
+        loopStartedAt: previousStep?.loopStartedAt,
       };
       await this.adapter.updateInstance(instanceId, {
         currentStep: stepName,
@@ -166,6 +176,12 @@ export class WorkflowStateMachine {
           case "pass":
             output = await this.executePassStep(step, ctx);
             break;
+          case "poll":
+            output = await this.executePollStep(instanceId, step, ctx, definition);
+            break;
+          case "loop":
+            output = await this.executeLoopStep(instanceId, step, ctx);
+            break;
         }
 
         // Persist step completion
@@ -176,6 +192,8 @@ export class WorkflowStateMachine {
         if (step.type === "choice") {
           // Choice step returns { chosen: "nextStepName" }
           currentStepName = output?.chosen;
+        } else if (step.type === "loop" && output?.loopTo) {
+          currentStepName = output.loopTo;
         } else if (step.end) {
           currentStepName = undefined;
         } else if (step.next) {
@@ -445,6 +463,87 @@ export class WorkflowStateMachine {
     return output;
   }
 
+  private async executePollStep(
+    instanceId: string,
+    step: PollStepDefinition,
+    ctx: WorkflowContext,
+    _definition: WorkflowDefinition,
+  ): Promise<any> {
+    let input: any;
+
+    if (step.inputSchema) {
+      if (typeof step.inputSchema === "function") {
+        input = step.inputSchema(ctx.prev, ctx.input);
+      } else {
+        const parseResult = step.inputSchema.safeParse(ctx.input);
+        if (!parseResult.success) {
+          throw new Error(`Input validation failed: ${parseResult.error.message}`);
+        }
+        input = parseResult.data;
+      }
+    } else {
+      input = ctx.input;
+    }
+
+    let instance = await this.adapter.getInstance(instanceId);
+    const stepResult = instance?.stepResults[step.name];
+    const startedAt = stepResult?.startedAt ?? new Date();
+
+    if (instance && stepResult) {
+      stepResult.input = stepResult.input ?? input;
+      stepResult.pollCount = stepResult.pollCount ?? 0;
+      await this.adapter.updateInstance(instanceId, {
+        stepResults: { ...instance.stepResults, [step.name]: stepResult },
+      });
+    }
+
+    while (true) {
+      if (step.timeout && Date.now() - startedAt.getTime() > step.timeout) {
+        throw new Error(`Poll step "${step.name}" timed out`);
+      }
+
+      instance = await this.adapter.getInstance(instanceId);
+      const sr = instance?.stepResults[step.name];
+      const pollCount = sr?.pollCount ?? 0;
+
+      if (step.maxAttempts && pollCount >= step.maxAttempts) {
+        throw new Error(`Poll step "${step.name}" exceeded maxAttempts`);
+      }
+
+      if (step.interval > 0) {
+        await new Promise((resolve) => setTimeout(resolve, step.interval));
+      }
+
+      const result = await step.check(input, ctx);
+      const nextPollCount = pollCount + 1;
+
+      if (instance && sr) {
+        sr.pollCount = nextPollCount;
+        sr.lastPolledAt = new Date();
+        sr.output = result;
+        await this.adapter.updateInstance(instanceId, {
+          stepResults: { ...instance.stepResults, [step.name]: sr },
+        });
+      }
+
+      this.events.onStepPoll(instanceId, step.name, nextPollCount, result.done, result.result);
+
+      if (result.done) {
+        let output = result.result;
+
+        if (step.outputSchema) {
+          const parseResult = step.outputSchema.safeParse(output);
+          if (!parseResult.success) {
+            throw new Error(`Output validation failed: ${parseResult.error.message}`);
+          }
+          output = parseResult.data;
+        }
+
+        return output;
+      }
+    }
+  }
+
   private async executePassStep(
     step: PassStepDefinition,
     ctx: WorkflowContext,
@@ -456,6 +555,52 @@ export class WorkflowStateMachine {
       return step.transform(ctx);
     }
     return ctx.input;
+  }
+
+  private async executeLoopStep(
+    instanceId: string,
+    step: LoopStepDefinition,
+    ctx: WorkflowContext,
+  ): Promise<{ loopTo?: string }> {
+    const instance = await this.adapter.getInstance(instanceId);
+    const stepResult = instance?.stepResults[step.name] ?? {
+      stepName: step.name,
+      status: "running" as const,
+      attempts: 0,
+      startedAt: new Date(),
+    };
+    const loopStartedAt = stepResult.loopStartedAt ?? stepResult.startedAt ?? new Date();
+    const loopCount = stepResult.loopCount ?? 0;
+
+    if (step.timeout && Date.now() - loopStartedAt.getTime() > step.timeout) {
+      throw new Error(`Loop step "${step.name}" timed out`);
+    }
+
+    if (step.maxIterations && loopCount >= step.maxIterations) {
+      throw new Error(`Loop step "${step.name}" exceeded maxIterations`);
+    }
+
+    const shouldLoop = step.condition(ctx);
+
+    if (instance) {
+      stepResult.loopCount = shouldLoop ? loopCount + 1 : loopCount;
+      stepResult.loopStartedAt = loopStartedAt;
+      stepResult.lastLoopedAt = shouldLoop ? new Date() : stepResult.lastLoopedAt;
+      stepResult.output = { looped: shouldLoop };
+      await this.adapter.updateInstance(instanceId, {
+        stepResults: { ...instance.stepResults, [step.name]: stepResult },
+      });
+    }
+
+    if (shouldLoop) {
+      this.events.onStepLoop(instanceId, step.name, loopCount + 1, step.target);
+      if (step.interval && step.interval > 0) {
+        await new Promise((resolve) => setTimeout(resolve, step.interval));
+      }
+      return { loopTo: step.target };
+    }
+
+    return {};
   }
 
   // ============================================

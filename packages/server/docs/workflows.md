@@ -285,6 +285,51 @@ workflow("example")
   .end("done")
 ```
 
+### Poll
+
+Use a poll step for wait → check loops that persist across restarts.
+
+```typescript
+workflow("batch.status")
+  .poll("wait-for-result", {
+    interval: 5000,
+    timeout: 600000,
+    maxAttempts: 120,
+    check: async (input, ctx) => {
+      const status = await fetchStatus(input.operationId);
+      if (status.state === "FAILED") throw new Error(status.error);
+      if (status.state === "SUCCEEDED") {
+        return { done: true, result: status.data };
+      }
+      return { done: false };
+    },
+  })
+  .build();
+```
+
+Each poll cycle emits `workflow.step.poll` events and persists progress to the instance.
+
+### Loop
+
+Use a loop step to jump back to a previous step until a condition is false.
+
+```typescript
+workflow("loop-example")
+  .task("increment", {
+    handler: async (input) => ({ count: (input.count ?? 0) + 1 }),
+  })
+  .loop("repeat", {
+    condition: (ctx) => ctx.steps.increment.count < 3,
+    target: "increment",
+    interval: 1000,
+    maxIterations: 10,
+    timeout: 30000,
+  })
+  .build();
+```
+
+Each loop iteration emits `workflow.step.loop` and persists loop counters to the instance.
+
 ## Workflow Context
 
 Every step receives a `WorkflowContext` with:

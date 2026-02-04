@@ -59,7 +59,7 @@ type InferZodOutput<T extends ZodSchema> = z.infer<T>;
 // Step Types
 // ============================================
 
-export type StepType = "task" | "parallel" | "choice" | "pass";
+export type StepType = "task" | "parallel" | "choice" | "pass" | "poll" | "loop";
 
 export interface BaseStepDefinition {
   name: string;
@@ -146,11 +146,54 @@ export interface PassStepDefinition extends BaseStepDefinition {
   result?: any;
 }
 
+export interface PollStepResult<T = any> {
+  done: boolean;
+  result?: T;
+}
+
+export interface PollStepDefinition<
+  TInput extends ZodSchema = ZodSchema,
+  TOutput extends ZodSchema = ZodSchema,
+> extends BaseStepDefinition {
+  type: "poll";
+  /** Wait duration between checks in ms */
+  interval: number;
+  /** Max total time before failing this step (ms) */
+  timeout?: number;
+  /** Max number of check cycles before failing */
+  maxAttempts?: number;
+  /** Input schema or mapper */
+  inputSchema?: TInput | ((prev: any, workflowInput: any) => InferZodOutput<TInput>);
+  /** Output schema for the final result */
+  outputSchema?: TOutput;
+  /** Check handler: return done:true to proceed */
+  check: (
+    input: InferZodOutput<TInput>,
+    ctx: WorkflowContext
+  ) => Promise<PollStepResult<InferZodOutput<TOutput>>> | PollStepResult<InferZodOutput<TOutput>>;
+}
+
+export interface LoopStepDefinition extends BaseStepDefinition {
+  type: "loop";
+  /** Condition to continue looping */
+  condition: (ctx: WorkflowContext) => boolean;
+  /** Step name to jump back to when condition is true */
+  target: string;
+  /** Optional delay before looping (ms) */
+  interval?: number;
+  /** Max total time before failing this loop (ms) */
+  timeout?: number;
+  /** Max number of loop iterations before failing */
+  maxIterations?: number;
+}
+
 export type StepDefinition =
   | TaskStepDefinition
   | ParallelStepDefinition
   | ChoiceStepDefinition
-  | PassStepDefinition;
+  | PassStepDefinition
+  | PollStepDefinition
+  | LoopStepDefinition;
 
 // ============================================
 // Workflow Definition
@@ -203,6 +246,11 @@ export interface StepResult {
   startedAt?: Date;
   completedAt?: Date;
   attempts: number;
+  pollCount?: number;
+  lastPolledAt?: Date;
+  loopCount?: number;
+  lastLoopedAt?: Date;
+  loopStartedAt?: Date;
 }
 
 export interface WorkflowInstance {
@@ -563,6 +611,69 @@ export class WorkflowBuilder {
       result: config?.result,
       next: config?.next,
       end: config?.end ?? (!config?.next),
+    };
+
+    this.addStep(step);
+    return this;
+  }
+
+  loop(
+    name: string,
+    config: {
+      condition: (ctx: WorkflowContext) => boolean;
+      target: string;
+      interval?: number;
+      timeout?: number;
+      maxIterations?: number;
+      next?: string;
+      end?: boolean;
+    }
+  ): this {
+    const step: LoopStepDefinition = {
+      name,
+      type: "loop",
+      condition: config.condition,
+      target: config.target,
+      interval: config.interval,
+      timeout: config.timeout,
+      maxIterations: config.maxIterations,
+      next: config.next,
+      end: config.end,
+    };
+
+    this.addStep(step);
+    return this;
+  }
+
+  poll<TInput extends ZodSchema = ZodSchema, TOutput extends ZodSchema = ZodSchema>(
+    name: string,
+    config: {
+      check: (
+        input: InferZodOutput<TInput>,
+        ctx: WorkflowContext
+      ) => Promise<PollStepResult<InferZodOutput<TOutput>>> | PollStepResult<InferZodOutput<TOutput>>;
+      interval: number;
+      timeout?: number;
+      maxAttempts?: number;
+      inputSchema?: TInput | ((prev: any, workflowInput: any) => InferZodOutput<TInput>);
+      outputSchema?: TOutput;
+      retry?: RetryConfig;
+      next?: string;
+      end?: boolean;
+    }
+  ): this {
+    const step: PollStepDefinition<TInput, TOutput> = {
+      name,
+      type: "poll",
+      check: config.check,
+      interval: config.interval,
+      timeout: config.timeout,
+      maxAttempts: config.maxAttempts,
+      inputSchema: config.inputSchema,
+      outputSchema: config.outputSchema,
+      retry: config.retry,
+      next: config.next,
+      end: config.end,
     };
 
     this.addStep(step);
@@ -1198,6 +1309,51 @@ class WorkflowsImpl implements Workflows {
           });
         }
       },
+      onStepPoll: (id, stepName, pollCount, done, result) => {
+        this.emitEvent("workflow.step.poll", {
+          instanceId: id,
+          stepName,
+          pollCount,
+          done,
+          result,
+        });
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${id}`, "step.poll", {
+            stepName,
+            pollCount,
+            done,
+            result,
+          });
+          this.sse.broadcast("workflows:all", "workflow.step.poll", {
+            instanceId: id,
+            stepName,
+            pollCount,
+            done,
+            result,
+          });
+        }
+      },
+      onStepLoop: (id, stepName, loopCount, target) => {
+        this.emitEvent("workflow.step.loop", {
+          instanceId: id,
+          stepName,
+          loopCount,
+          target,
+        });
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${id}`, "step.loop", {
+            stepName,
+            loopCount,
+            target,
+          });
+          this.sse.broadcast("workflows:all", "workflow.step.loop", {
+            instanceId: id,
+            stepName,
+            loopCount,
+            target,
+          });
+        }
+      },
       onStepRetry: (id, stepName, attempt, max, delayMs) => {
         this.emitEvent("workflow.step.retry", {
           instanceId: id,
@@ -1479,6 +1635,55 @@ class WorkflowsImpl implements Workflows {
             instanceId,
             stepName: event.stepName,
             error: event.error,
+          });
+        }
+        break;
+      }
+
+      case "step.poll": {
+        await this.emitEvent("workflow.step.poll", {
+          instanceId,
+          stepName: event.stepName,
+          pollCount: event.pollCount,
+          done: event.done,
+          result: event.result,
+        });
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${instanceId}`, "step.poll", {
+            stepName: event.stepName,
+            pollCount: event.pollCount,
+            done: event.done,
+            result: event.result,
+          });
+          this.sse.broadcast("workflows:all", "workflow.step.poll", {
+            instanceId,
+            stepName: event.stepName,
+            pollCount: event.pollCount,
+            done: event.done,
+            result: event.result,
+          });
+        }
+        break;
+      }
+
+      case "step.loop": {
+        await this.emitEvent("workflow.step.loop", {
+          instanceId,
+          stepName: event.stepName,
+          loopCount: event.loopCount,
+          target: event.target,
+        });
+        if (this.sse) {
+          this.sse.broadcast(`workflow:${instanceId}`, "step.loop", {
+            stepName: event.stepName,
+            loopCount: event.loopCount,
+            target: event.target,
+          });
+          this.sse.broadcast("workflows:all", "workflow.step.loop", {
+            instanceId,
+            stepName: event.stepName,
+            loopCount: event.loopCount,
+            target: event.target,
           });
         }
         break;

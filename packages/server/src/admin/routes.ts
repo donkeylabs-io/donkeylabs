@@ -505,6 +505,17 @@ export function createAdminRouter(config: AdminRouteContext) {
         stepName: z.string(),
         error: z.string(),
       }),
+      "step.poll": z.object({
+        stepName: z.string(),
+        pollCount: z.number(),
+        done: z.boolean(),
+        result: z.any().optional(),
+      }),
+      "step.loop": z.object({
+        stepName: z.string(),
+        loopCount: z.number(),
+        target: z.string(),
+      }),
       completed: z.object({
         output: z.any().optional(),
       }),
@@ -547,6 +558,19 @@ export function createAdminRouter(config: AdminRouteContext) {
         instanceId: z.string(),
         workflowName: z.string(),
         error: z.string(),
+      }),
+      "workflow.step.poll": z.object({
+        instanceId: z.string(),
+        stepName: z.string(),
+        pollCount: z.number(),
+        done: z.boolean(),
+        result: z.any().optional(),
+      }),
+      "workflow.step.loop": z.object({
+        instanceId: z.string(),
+        stepName: z.string(),
+        loopCount: z.number(),
+        target: z.string(),
       }),
     },
     handle: (input, ctx) => {

@@ -20,6 +20,8 @@ export type WorkflowEventType =
   | "step.started"
   | "step.completed"
   | "step.failed"
+  | "step.poll"
+  | "step.loop"
   | "progress"
   | "completed"
   | "failed"
@@ -41,6 +43,11 @@ export interface WorkflowEvent {
   totalSteps?: number;
   /** Next step to execute (for step.completed events) */
   nextStep?: string;
+  pollCount?: number;
+  done?: boolean;
+  result?: any;
+  loopCount?: number;
+  target?: string;
   /** Custom event name (for event type) */
   event?: string;
   /** Custom event payload or log data */
