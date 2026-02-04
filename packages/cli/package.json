@@ -1,6 +1,6 @@
 {
   "name": "@donkeylabs/cli",
-  "version": "2.0.19",
+  "version": "2.0.20",
   "type": "module",
   "description": "CLI for @donkeylabs/server - project scaffolding and code generation",
   "main": "./src/index.ts",
