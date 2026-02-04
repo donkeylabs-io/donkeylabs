@@ -32,6 +32,7 @@ export {
 export {
   type Cron,
   type CronTask,
+  type CronRunContext,
   type CronConfig,
   createCron,
 } from "./cron";
@@ -41,6 +42,7 @@ export {
   type Job,
   type JobStatus,
   type JobHandler,
+  type JobHandlerContext,
   type JobAdapter,
   type JobsConfig,
   type GetAllJobsOptions,

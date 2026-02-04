@@ -3,7 +3,7 @@
 // Supports both in-process handlers and external processes (Python, Go, Shell, etc.)
 
 import type { Events } from "./events";
-import type { Logger } from "./logger";
+import type { Logger, LogLevel } from "./logger";
 import type {
   ExternalJobConfig,
   ExternalJob,
@@ -59,7 +59,13 @@ export interface Job {
 }
 
 export interface JobHandler<T = any, R = any> {
-  (data: T, ctx?: { logger: Logger }): Promise<R>;
+  (data: T, ctx?: JobHandlerContext): Promise<R>;
+}
+
+export interface JobHandlerContext {
+  logger?: Logger;
+  emit?: (event: string, data?: Record<string, any>) => Promise<void>;
+  log?: (level: LogLevel, message: string, data?: Record<string, any>) => void;
 }
 
 /** Options for listing all jobs */
@@ -999,6 +1005,7 @@ class JobsImpl implements Jobs {
   ): void {
     const decoder = new TextDecoder();
     const events = this.events;
+    const scopedLogger = this.logger?.scoped("job", jobId);
 
     // Helper to stream a ReadableStream
     const streamOutput = async (
@@ -1027,6 +1034,10 @@ class JobsImpl implements Jobs {
               level,
               message: text.trim(),
             });
+          }
+
+          if (scopedLogger) {
+            scopedLogger[level](text.trim(), { external: true });
           }
         }
       } catch {
@@ -1067,7 +1078,18 @@ class JobsImpl implements Jobs {
 
       // Create scoped logger for this job execution
       const scopedLogger = this.logger?.scoped("job", job.id);
-      const result = await handler(job.data, scopedLogger ? { logger: scopedLogger } : undefined);
+      const emit = this.createJobEmitter(job);
+      const log = scopedLogger
+        ? (level: LogLevel, message: string, data?: Record<string, any>) => {
+            scopedLogger[level](message, data);
+          }
+        : undefined;
+
+      const result = await handler(job.data, {
+        logger: scopedLogger,
+        emit,
+        log,
+      });
 
       await this.adapter.update(job.id, {
         status: "completed",
@@ -1140,6 +1162,23 @@ class JobsImpl implements Jobs {
     } finally {
       this.activeJobs--;
     }
+  }
+
+  private createJobEmitter(job: Job): JobHandlerContext["emit"] {
+    const events = this.events;
+    if (!events) return undefined;
+    return async (event: string, data?: Record<string, any>) => {
+      const payload = {
+        jobId: job.id,
+        name: job.name,
+        event,
+        data,
+      };
+
+      await events.emit("job.event", payload);
+      await events.emit(`job.${job.name}.event`, payload);
+      await events.emit(`job.${job.id}.event`, payload);
+    };
   }
 }
 

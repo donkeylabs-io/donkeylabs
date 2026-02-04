@@ -68,7 +68,7 @@ export async function bootstrapSubprocess(
   const logs = createLogs({ adapter: new MemoryLogsAdapter(), events });
   const logger = createLogger();
 
-  const cron = createCron({ logger });
+  const cron = createCron({ logger, events });
 
   const jobAdapter = new KyselyJobAdapter(db, { cleanupDays: 0 });
   const workflowAdapter = new KyselyWorkflowAdapter(db, { cleanupDays: 0 });

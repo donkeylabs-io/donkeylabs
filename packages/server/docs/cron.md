@@ -26,7 +26,7 @@ ctx.core.cron.schedule("0 0 * * *", async () => {
 interface Cron {
   schedule(
     expression: string,
-    handler: () => void | Promise<void>,
+    handler: (logger?: Logger, ctx?: CronRunContext) => void | Promise<void>,
     options?: { name?: string; enabled?: boolean }
   ): string;
   unschedule(taskId: string): boolean;
@@ -43,10 +43,18 @@ interface CronTask {
   id: string;
   name: string;
   expression: string;
-  handler: () => void | Promise<void>;
+  handler: (logger?: Logger, ctx?: CronRunContext) => void | Promise<void>;
   enabled: boolean;
   lastRun?: Date;
   nextRun?: Date;
+}
+
+interface CronRunContext {
+  taskId: string;
+  name: string;
+  logger?: Logger;
+  emit?: (event: string, data?: Record<string, any>) => Promise<void>;
+  log?: (level: LogLevel, message: string, data?: Record<string, any>) => void;
 }
 ```
 
@@ -352,6 +360,24 @@ ctx.core.cron.schedule("0 * * * *", async () => {
     }
   }
 }, { name: "critical-operation" });
+```
+
+---
+
+## Logs and Custom Events
+
+Cron handlers receive a scoped logger and a context helper. Logs are persisted and emitted as events:
+
+- `log.cron` (all cron logs)
+- `log.cron.<taskName>` (per task)
+
+You can also emit custom events scoped to a cron task:
+
+```ts
+ctx.core.cron.schedule("0 * * * *", async (logger, ctx) => {
+  ctx?.log?.("info", "Hourly cleanup started");
+  await ctx?.emit?.("cleanup.started", { when: new Date().toISOString() });
+});
 ```
 
 ---

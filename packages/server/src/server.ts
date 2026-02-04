@@ -264,6 +264,7 @@ export class AppServer {
     const cron = createCron({
       ...options.cron,
       logger,
+      events,
     });
 
     // Create adapters - use Kysely by default, or legacy SQLite if requested

@@ -14,6 +14,7 @@ import type { SSE } from "./sse";
 import type { z } from "zod";
 import { sql } from "kysely";
 import type { CoreServices } from "../core";
+import type { Logger, LogLevel } from "./logger";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -243,6 +244,12 @@ export interface WorkflowContext {
   getStepResult<T = any>(stepName: string): T | undefined;
   /** Core services (logger, events, cache, etc.) */
   core: CoreServices;
+  /** Scoped logger for this workflow instance (source=workflow, sourceId=instanceId) */
+  logger?: Logger;
+  /** Emit a workflow-scoped custom event */
+  emit?: (event: string, data?: Record<string, any>) => Promise<void>;
+  /** Write a scoped log entry for this workflow instance */
+  log?: (level: LogLevel, message: string, data?: Record<string, any>) => void;
   /** Plugin services - available for business logic in workflow handlers */
   plugins: Record<string, any>;
   /**

@@ -3,6 +3,7 @@
 // Communicates through an event callback interface - no knowledge of IPC, SSE, or process management.
 
 import type { CoreServices } from "../core";
+import type { LogLevel } from "./logger";
 import type { Jobs } from "./jobs";
 import type {
   WorkflowAdapter,
@@ -482,6 +483,35 @@ export class WorkflowStateMachine {
     const adapter = this.adapter;
     const instanceId = instance.id;
 
+    const scopedLogger = this.core?.logger?.scoped("workflow", instance.id);
+    const emit = this.core?.events
+      ? async (event: string, data?: Record<string, any>) => {
+          const payload = {
+            instanceId: instance.id,
+            workflowName: instance.workflowName,
+            event,
+            data,
+          };
+
+          await this.core!.events.emit("workflow.event", payload);
+          await this.core!.events.emit(`workflow.${instance.workflowName}.event`, payload);
+          await this.core!.events.emit(`workflow.${instance.id}.event`, payload);
+        }
+      : undefined;
+
+    const log = scopedLogger
+      ? (level: LogLevel, message: string, data?: Record<string, any>) => {
+          scopedLogger[level](message, data);
+        }
+      : undefined;
+
+    const core = this.core
+      ? {
+          ...this.core,
+          logger: scopedLogger ?? this.core.logger,
+        }
+      : this.core;
+
     return {
       input: instance.input,
       steps,
@@ -490,7 +520,10 @@ export class WorkflowStateMachine {
       getStepResult: <T = any>(stepName: string): T | undefined => {
         return steps[stepName] as T | undefined;
       },
-      core: this.core!,
+      core: core!,
+      logger: scopedLogger,
+      emit,
+      log,
       plugins: this.plugins,
       metadata,
       setMetadata: async (key: string, value: any): Promise<void> => {

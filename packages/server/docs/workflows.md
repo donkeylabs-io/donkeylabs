@@ -518,6 +518,31 @@ export const reportWorkflow = workflow("report.generate")
   .build();
 ```
 
+#### Workflow Logs and Custom Events
+
+Workflow handlers get a scoped logger and helpers:
+
+- `ctx.logger` and `ctx.core.logger` are scoped to `source=workflow`, `sourceId=<instanceId>`
+- Logs are persisted and emitted as events:
+  - `log.workflow` (all workflow logs)
+  - `log.workflow.<instanceId>` (per workflow instance)
+
+Custom events can be emitted with `ctx.emit`:
+
+```typescript
+export const reportWorkflow = workflow("report.generate")
+  .task("run", {
+    handler: async (input, ctx) => {
+      ctx.log?.("info", "Starting report", { reportId: input.reportId });
+      await ctx.emit?.("progress", { stage: "fetch" });
+      const data = await ctx.plugins.reports.generate(input.reportId);
+      await ctx.emit?.("progress", { stage: "write" });
+      return { data };
+    },
+  })
+  .build();
+```
+
 ### Inline Mode
 
 For lightweight workflows that complete quickly, you can opt into inline execution:

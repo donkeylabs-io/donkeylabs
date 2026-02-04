@@ -1,13 +1,14 @@
 // Core Cron Service
 // Schedule recurring tasks with cron expressions
 
-import type { Logger } from "./logger";
+import type { Logger, LogLevel } from "./logger";
+import type { Events } from "./events";
 
 export interface CronTask {
   id: string;
   name: string;
   expression: string;
-  handler: (logger?: Logger) => void | Promise<void>;
+  handler: (logger?: Logger, ctx?: CronRunContext) => void | Promise<void>;
   enabled: boolean;
   lastRun?: Date;
   nextRun?: Date;
@@ -16,12 +17,13 @@ export interface CronTask {
 export interface CronConfig {
   timezone?: string; // For future use
   logger?: Logger;
+  events?: Events;
 }
 
 export interface Cron {
   schedule(
     expression: string,
-    handler: (logger?: Logger) => void | Promise<void>,
+    handler: (logger?: Logger, ctx?: CronRunContext) => void | Promise<void>,
     options?: { name?: string; enabled?: boolean }
   ): string;
   unschedule(taskId: string): boolean;
@@ -32,6 +34,14 @@ export interface Cron {
   trigger(taskId: string): Promise<void>;
   start(): void;
   stop(): Promise<void>;
+}
+
+export interface CronRunContext {
+  taskId: string;
+  name: string;
+  logger?: Logger;
+  emit?: (event: string, data?: Record<string, any>) => Promise<void>;
+  log?: (level: LogLevel, message: string, data?: Record<string, any>) => void;
 }
 
 // Simple cron expression parser
@@ -263,14 +273,16 @@ class CronImpl implements Cron {
   private timer: ReturnType<typeof setInterval> | null = null;
   private taskCounter = 0;
   private logger?: Logger;
+  private events?: Events;
 
   constructor(config: CronConfig = {}) {
     this.logger = config.logger;
+    this.events = config.events;
   }
 
   schedule(
     expression: string,
-    handler: (logger?: Logger) => void | Promise<void>,
+    handler: (logger?: Logger, ctx?: CronRunContext) => void | Promise<void>,
     options: { name?: string; enabled?: boolean } = {}
   ): string {
     const id = `cron_${++this.taskCounter}_${Date.now()}`;
@@ -341,7 +353,7 @@ class CronImpl implements Cron {
 
     task.lastRun = new Date();
     const scopedLogger = this.logger?.scoped("cron", task.name);
-    await task.handler(scopedLogger);
+    await task.handler(scopedLogger, this.createRunContext(task, scopedLogger));
   }
 
   start(): void {
@@ -365,7 +377,7 @@ class CronImpl implements Cron {
 
           // Execute handler with scoped logger (fire and forget, but log errors)
           const scopedLogger = this.logger?.scoped("cron", task.name);
-          Promise.resolve(task.handler(scopedLogger)).catch(err => {
+          Promise.resolve(task.handler(scopedLogger, this.createRunContext(task, scopedLogger))).catch(err => {
             console.error(`[Cron] Task "${task.name}" failed:`, err);
           });
         }
@@ -396,7 +408,7 @@ class CronImpl implements Cron {
 
           // Execute the handler asynchronously with scoped logger
           const scopedLogger = this.logger?.scoped("cron", task.name);
-          Promise.resolve(task.handler(scopedLogger)).catch(err => {
+          Promise.resolve(task.handler(scopedLogger, this.createRunContext(task, scopedLogger))).catch(err => {
             console.error(`[Cron] Catch-up task "${task.name}" failed:`, err);
           });
 
@@ -423,6 +435,37 @@ class CronImpl implements Cron {
       clearInterval(this.timer);
       this.timer = null;
     }
+  }
+
+  private createRunContext(task: InternalCronTask, logger?: Logger): CronRunContext {
+    const emit = this.events
+      ? async (event: string, data?: Record<string, any>) => {
+          const payload = {
+            taskId: task.id,
+            name: task.name,
+            event,
+            data,
+          };
+
+          await this.events!.emit("cron.event", payload);
+          await this.events!.emit(`cron.${task.name}.event`, payload);
+          await this.events!.emit(`cron.${task.id}.event`, payload);
+        }
+      : undefined;
+
+    const log = logger
+      ? (level: LogLevel, message: string, data?: Record<string, any>) => {
+          logger[level](message, data);
+        }
+      : undefined;
+
+    return {
+      taskId: task.id,
+      name: task.name,
+      logger,
+      emit,
+      log,
+    };
   }
 }
 

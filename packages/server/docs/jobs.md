@@ -438,6 +438,21 @@ interface JobAdapter {
 }
 ```
 
+---
+
+## Logs and Custom Events
+
+Job handlers receive a scoped logger and helpers. Logs are persisted and emitted as events:
+
+- `log.job` (all job logs)
+- `log.job.<jobId>` (per job)
+
+Custom events are emitted via `ctx.emit`:
+
+- `job.event`
+- `job.<jobName>.event`
+- `job.<jobId>.event`
+
 ### SQLite Adapter Example
 
 ```ts
