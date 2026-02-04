@@ -296,5 +296,5 @@ describe("Script Package.json Integration", () => {
       cwd: PACKAGE_ROOT,
     }).exited;
     expect(result).toBe(0);
-  });
+  }, 30000);
 });

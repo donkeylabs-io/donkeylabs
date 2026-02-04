@@ -1,7 +1,7 @@
 import { sql, type Kysely } from "kysely";
 import { readdir } from "node:fs/promises";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { z } from "zod";
 import type { Logger } from "./core/logger";
 import type { Cache } from "./core/cache";
@@ -17,6 +17,32 @@ import type { Audit } from "./core/audit";
 import type { WebSocketService } from "./core/websocket";
 import type { Storage } from "./core/storage";
 import type { Logs } from "./core/logs";
+
+// ============================================
+// Auto-detect caller module for plugin define()
+// ============================================
+
+const CORE_FILE = resolve(fileURLToPath(import.meta.url));
+
+/**
+ * Walk the call stack to find the file that invoked define().
+ * Returns a file:// URL string or undefined if detection fails.
+ * Skips frames originating from this file (core.ts).
+ */
+function captureCallerUrl(): string | undefined {
+  const stack = new Error().stack ?? "";
+  for (const line of stack.split("\n").slice(1)) {
+    const match = line.match(/at\s+(?:.*?\s+\(?)?([^\s():]+):\d+:\d+/);
+    if (match) {
+      let filePath = match[1];
+      if (filePath.startsWith("file://")) filePath = fileURLToPath(filePath);
+      if (filePath.startsWith("native")) continue;
+      filePath = resolve(filePath);
+      if (filePath !== CORE_FILE) return pathToFileURL(filePath).href;
+    }
+  }
+  return undefined;
+}
 
 export interface PluginRegistry {}
 
@@ -330,7 +356,7 @@ export class PluginBuilder<LocalSchema = {}> {
     client?: ClientConfig;
     customErrors?: CustomErrors;
   } {
-    return config as any;
+    return { ...config, _modulePath: captureCallerUrl() } as any;
   }
 }
 
@@ -386,9 +412,11 @@ export class ConfiguredPluginBuilder<LocalSchema, Config> {
     client?: ClientConfig;
     customErrors?: CustomErrors;
   }> {
+    const modulePath = captureCallerUrl();
     const factory = (config: Config) => ({
       ...pluginDef,
       _boundConfig: config,
+      _modulePath: modulePath,
     });
     return factory as any;
   }
@@ -425,6 +453,8 @@ export type Plugin = {
     service: (ctx: any) => any;
     /** Called after service is created - use for registering crons, events, etc. */
     init?: (ctx: any, service: any) => void | Promise<void>;
+    /** Auto-detected module path where the plugin was defined */
+    _modulePath?: string;
 };
 
 export type PluginWithConfig<Config = void> = Plugin & {
@@ -452,6 +482,54 @@ export class PluginManager {
 
   getPlugins(): Plugin[] {
       return Array.from(this.plugins.values());
+  }
+
+  getPluginNames(): string[] {
+      return Array.from(this.plugins.keys());
+  }
+
+  /** Returns { name: modulePath } for plugins that have a captured module path */
+  getPluginModulePaths(): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const [name, plugin] of this.plugins) {
+      if (plugin._modulePath) {
+        result[name] = plugin._modulePath;
+      }
+    }
+    return result;
+  }
+
+  /** Returns { name: boundConfig } for configured plugins */
+  getPluginConfigs(): Record<string, any> {
+    const result: Record<string, any> = {};
+    for (const [name, plugin] of this.plugins) {
+      if ((plugin as ConfiguredPlugin)._boundConfig !== undefined) {
+        result[name] = (plugin as ConfiguredPlugin)._boundConfig;
+      }
+    }
+    return result;
+  }
+
+  /** Returns { name: [...deps] } for plugins with dependencies */
+  getPluginDependencies(): Record<string, string[]> {
+    const result: Record<string, string[]> = {};
+    for (const [name, plugin] of this.plugins) {
+      if (plugin.dependencies && plugin.dependencies.length > 0) {
+        result[name] = [...plugin.dependencies];
+      }
+    }
+    return result;
+  }
+
+  /** Returns custom error definitions per plugin */
+  getPluginCustomErrors(): Record<string, Record<string, any>> {
+    const result: Record<string, Record<string, any>> = {};
+    for (const [name, plugin] of this.plugins) {
+      if (plugin.customErrors && Object.keys(plugin.customErrors).length > 0) {
+        result[name] = plugin.customErrors;
+      }
+    }
+    return result;
   }
 
   register(plugin: ConfiguredPlugin): void {

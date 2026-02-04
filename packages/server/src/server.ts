@@ -1023,6 +1023,15 @@ ${factoryFunction}
     // Pass plugins to workflows so handlers can access ctx.plugins
     this.coreServices.workflows.setPlugins(this.manager.getServices());
 
+    // Forward plugin metadata so isolated workflows can instantiate plugins locally
+    this.coreServices.workflows.setPluginMetadata({
+      names: this.manager.getPluginNames(),
+      modulePaths: this.manager.getPluginModulePaths(),
+      configs: this.manager.getPluginConfigs(),
+      dependencies: this.manager.getPluginDependencies(),
+      customErrors: this.manager.getPluginCustomErrors(),
+    });
+
     this.isInitialized = true;
 
     this.coreServices.cron.start();

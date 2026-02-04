@@ -149,6 +149,7 @@ export {
   type PassStepDefinition,
   type RetryConfig,
   type GetAllWorkflowsOptions,
+  type PluginMetadata,
   WorkflowBuilder,
   MemoryWorkflowAdapter,
   workflow,

@@ -487,6 +487,37 @@ ctx.core.workflows.register(myWorkflow);
 
 > **Advanced:** The module path is captured automatically when you call `.build()`. If you re-export a workflow definition from a different module, pass `{ modulePath: import.meta.url }` explicitly so the subprocess can find the definition.
 
+#### Isolated Plugin Initialization
+
+In isolated mode, the subprocess **boots a full plugin manager** and runs plugin `init` hooks locally. This means your workflow handlers can use `ctx.plugins` without IPC fallbacks, and cron/jobs/workflows/services registered in `init` are available inside the subprocess.
+
+Requirements:
+- Plugin modules must be discoverable from their module path (captured during `createPlugin.define()` / `pluginFactory()` calls).
+- Plugin configs and `ctx.core.config` must be JSON-serializable.
+
+```typescript
+// plugins/reports/index.ts
+export const reportsPlugin = createPlugin.define({
+  name: "reports",
+  service: async (ctx) => ({
+    generate: async (id: string) => ctx.db.selectFrom("reports").selectAll().execute(),
+  }),
+  init: async (ctx) => {
+    ctx.core.jobs.register("reports.generate", async () => undefined);
+  },
+});
+
+// workflows/report.ts
+export const reportWorkflow = workflow("report.generate")
+  .task("run", {
+    handler: async (input, ctx) => {
+      const data = await ctx.plugins.reports.generate(input.reportId);
+      return { data };
+    },
+  })
+  .build();
+```
+
 ### Inline Mode
 
 For lightweight workflows that complete quickly, you can opt into inline execution:
@@ -512,7 +543,7 @@ ctx.core.workflows.register(quickWorkflow);
 |---|---|---|
 | Step types | All (task, choice, parallel, pass) | All (task, choice, parallel, pass) |
 | Event loop | Separate process, won't block server | Runs on main thread |
-| Plugin access | Via IPC proxy | Direct access |
+| Plugin access | Local plugin services in subprocess | Direct access |
 | Best for | Long-running, CPU-intensive workflows | Quick validations, lightweight flows |
 | Setup | `workflows.register(wf)` | `workflows.register(wf)` |
 
@@ -545,6 +576,9 @@ interface Workflows {
 
   /** Stop the workflow service */
   stop(): Promise<void>;
+
+  /** Set plugin metadata for isolated workflows (AppServer sets this automatically) */
+  setPluginMetadata(metadata: PluginMetadata): void;
 }
 
 interface WorkflowRegisterOptions {

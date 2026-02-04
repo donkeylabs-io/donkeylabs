@@ -1,18 +1,13 @@
 #!/usr/bin/env bun
 // Workflow Executor - Subprocess Entry Point
-// Thin shell that creates a WorkflowStateMachine with IPC event bridge.
-// The state machine owns all execution logic and persistence.
+// Bootstraps core services and plugins locally for isolated workflows.
 
 import { connect } from "node:net";
 import type { Socket } from "node:net";
-import { Kysely } from "kysely";
-import { BunSqliteDialect } from "kysely-bun-sqlite";
-import Database from "bun:sqlite";
 import type { WorkflowEvent } from "./workflow-socket";
-import { WorkflowProxyConnection, createPluginsProxy, createCoreServicesProxy } from "./workflow-proxy";
 import type { WorkflowDefinition } from "./workflows";
-import { KyselyWorkflowAdapter } from "./workflow-adapter-kysely";
 import { WorkflowStateMachine, type StateMachineEvents } from "./workflow-state-machine";
+import { bootstrapSubprocess } from "./subprocess-bootstrap";
 
 // ============================================
 // Types
@@ -26,6 +21,10 @@ interface ExecutorConfig {
   tcpPort?: number;
   modulePath: string;
   dbPath: string;
+  pluginNames: string[];
+  pluginModulePaths: Record<string, string>;
+  pluginConfigs: Record<string, any>;
+  coreConfig?: Record<string, any>;
 }
 
 // ============================================
@@ -37,19 +36,23 @@ async function main(): Promise<void> {
   const stdin = await Bun.stdin.text();
   const config: ExecutorConfig = JSON.parse(stdin);
 
-  const { instanceId, workflowName, socketPath, tcpPort, modulePath, dbPath } = config;
+  const {
+    instanceId,
+    workflowName,
+    socketPath,
+    tcpPort,
+    modulePath,
+    dbPath,
+    pluginNames,
+    pluginModulePaths,
+    pluginConfigs,
+    coreConfig,
+  } = config;
 
-  // Connect to IPC socket
   const socket = await connectToSocket(socketPath, tcpPort);
-  const proxyConnection = new WorkflowProxyConnection(socket);
 
-  // Create database connection + adapter (subprocess owns its own persistence)
-  const sqlite = new Database(dbPath);
-  sqlite.run("PRAGMA busy_timeout = 5000");
-  const db = new Kysely<any>({
-    dialect: new BunSqliteDialect({ database: sqlite }),
-  });
-  const adapter = new KyselyWorkflowAdapter(db, { cleanupDays: 0 });
+  let cleanup: (() => Promise<void>) | undefined;
+  let exitCode = 0;
 
   // Start heartbeat
   const heartbeatInterval = setInterval(() => {
@@ -61,37 +64,39 @@ async function main(): Promise<void> {
   }, 5000);
 
   try {
-    // Send started event
-    sendEvent(socket, {
-      type: "started",
-      instanceId,
-      timestamp: Date.now(),
-    });
-
     // Import the workflow module to get the definition
     const module = await import(modulePath);
     const definition = findWorkflowDefinition(module, workflowName, modulePath);
 
-    // Create proxy objects for plugin/core access via IPC
-    const plugins = createPluginsProxy(proxyConnection);
-    const coreServices = createCoreServicesProxy(proxyConnection);
-
-    // Wrap coreServices proxy so that `db` resolves locally instead of via IPC.
-    // Spreading a Proxy with no ownKeys trap loses all proxied properties.
-    const coreWithDb = new Proxy(coreServices, {
-      get(target, prop, receiver) {
-        if (prop === "db") return db;
-        return Reflect.get(target, prop, receiver);
+    const bootstrap = await bootstrapSubprocess({
+      dbPath,
+      coreConfig,
+      pluginMetadata: {
+        names: pluginNames,
+        modulePaths: pluginModulePaths,
+        configs: pluginConfigs,
       },
     });
+    cleanup = bootstrap.cleanup;
 
-    // Create state machine with IPC event bridge
+    sendEvent(socket, {
+      type: "ready",
+      instanceId,
+      timestamp: Date.now(),
+    });
+
     const sm = new WorkflowStateMachine({
-      adapter,
-      core: coreWithDb as any,
-      plugins,
+      adapter: bootstrap.workflowAdapter,
+      core: bootstrap.core as any,
+      plugins: bootstrap.manager.getServices(),
       events: createIpcEventBridge(socket, instanceId),
       pollInterval: 1000,
+    });
+
+    sendEvent(socket, {
+      type: "started",
+      instanceId,
+      timestamp: Date.now(),
     });
 
     // Run the state machine to completion
@@ -112,16 +117,16 @@ async function main(): Promise<void> {
       timestamp: Date.now(),
       error: error instanceof Error ? error.message : String(error),
     });
-    process.exit(1);
+    exitCode = 1;
   } finally {
     clearInterval(heartbeatInterval);
-    proxyConnection.close();
     socket.end();
-    adapter.stop();
-    await db.destroy();
+    if (cleanup) {
+      await cleanup();
+    }
   }
 
-  process.exit(0);
+  process.exit(exitCode);
 }
 
 // ============================================

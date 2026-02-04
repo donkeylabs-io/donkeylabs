@@ -640,6 +640,8 @@ export interface WorkflowsConfig {
   dbPath?: string;
   /** Heartbeat timeout in ms (default: 60000) */
   heartbeatTimeout?: number;
+  /** Timeout waiting for isolated subprocess readiness (ms, default: 10000) */
+  readyTimeout?: number;
 }
 
 /** Options for registering a workflow */
@@ -689,6 +691,16 @@ export interface Workflows {
   setPlugins(plugins: Record<string, any>): void;
   /** Update metadata for a workflow instance (used by isolated workflows) */
   updateMetadata(instanceId: string, key: string, value: any): Promise<void>;
+  /** Set plugin metadata for local instantiation in isolated workflows */
+  setPluginMetadata(metadata: PluginMetadata): void;
+}
+
+export interface PluginMetadata {
+  names: string[];
+  modulePaths: Record<string, string>;
+  configs: Record<string, any>;
+  dependencies: Record<string, string[]>;
+  customErrors: Record<string, Record<string, any>>;
 }
 
 // ============================================
@@ -719,8 +731,25 @@ class WorkflowsImpl implements Workflows {
   private tcpPortRange: [number, number];
   private dbPath?: string;
   private heartbeatTimeoutMs: number;
+  private readyTimeoutMs: number;
   private workflowModulePaths = new Map<string, string>();
   private isolatedProcesses = new Map<string, IsolatedProcessInfo>();
+  private readyWaiters = new Map<
+    string,
+    {
+      promise: Promise<void>;
+      resolve: () => void;
+      reject: (error: Error) => void;
+      timeout: ReturnType<typeof setTimeout>;
+    }
+  >();
+
+  // Plugin metadata for local instantiation in isolated workflows
+  private pluginNames: string[] = [];
+  private pluginModulePaths: Record<string, string> = {};
+  private pluginConfigs: Record<string, any> = {};
+  private pluginDependencies: Record<string, string[]> = {};
+  private pluginCustomErrors: Record<string, Record<string, any>> = {};
 
   constructor(config: WorkflowsConfig = {}) {
     this.adapter = config.adapter ?? new MemoryWorkflowAdapter();
@@ -735,6 +764,7 @@ class WorkflowsImpl implements Workflows {
     this.tcpPortRange = config.tcpPortRange ?? [49152, 65535];
     this.dbPath = config.dbPath;
     this.heartbeatTimeoutMs = config.heartbeatTimeout ?? 60000;
+    this.readyTimeoutMs = config.readyTimeout ?? 10000;
   }
 
   private getSocketServer(): WorkflowSocketServer {
@@ -784,6 +814,14 @@ class WorkflowsImpl implements Workflows {
 
   setPlugins(plugins: Record<string, any>): void {
     this.plugins = plugins;
+  }
+
+  setPluginMetadata(metadata: PluginMetadata): void {
+    this.pluginNames = metadata.names;
+    this.pluginModulePaths = metadata.modulePaths;
+    this.pluginConfigs = metadata.configs;
+    this.pluginDependencies = metadata.dependencies;
+    this.pluginCustomErrors = metadata.customErrors;
   }
 
   async updateMetadata(instanceId: string, key: string, value: any): Promise<void> {
@@ -855,7 +893,7 @@ class WorkflowsImpl implements Workflows {
 
     if (isIsolated && modulePath && this.dbPath) {
       // Execute in isolated subprocess
-      this.executeIsolatedWorkflow(instance.id, definition, input, modulePath);
+      await this.executeIsolatedWorkflow(instance.id, definition, input, modulePath);
     } else {
       // Execute inline using state machine
       if (isIsolated && !modulePath) {
@@ -952,7 +990,14 @@ class WorkflowsImpl implements Workflows {
       const modulePath = this.workflowModulePaths.get(instance.workflowName);
 
       if (isIsolated && modulePath && this.dbPath) {
-        this.executeIsolatedWorkflow(instance.id, definition, instance.input, modulePath);
+        try {
+          await this.executeIsolatedWorkflow(instance.id, definition, instance.input, modulePath);
+        } catch (error) {
+          console.error(
+            `[Workflows] Failed to resume isolated workflow ${instance.id}:`,
+            error instanceof Error ? error.message : String(error)
+          );
+        }
       } else {
         this.startInlineWorkflow(instance.id, definition);
       }
@@ -988,6 +1033,12 @@ class WorkflowsImpl implements Workflows {
       }
     }
     this.running.clear();
+
+    for (const [instanceId, waiter] of this.readyWaiters) {
+      clearTimeout(waiter.timeout);
+      waiter.reject(new Error(`Workflows stopped before ready: ${instanceId}`));
+    }
+    this.readyWaiters.clear();
 
     // Stop adapter (cleanup timers and prevent further DB access)
     if (this.adapter && typeof (this.adapter as any).stop === "function") {
@@ -1182,20 +1233,36 @@ class WorkflowsImpl implements Workflows {
   ): Promise<void> {
     const socketServer = this.getSocketServer();
 
+    const pluginNames = this.pluginNames.length > 0
+      ? this.pluginNames
+      : Object.keys(this.pluginModulePaths);
+
+    if (pluginNames.length === 0 && Object.keys(this.plugins).length > 0) {
+      throw new Error(
+        "[Workflows] Plugin metadata is required for isolated workflows. " +
+          "Call workflows.setPluginMetadata() during server initialization."
+      );
+    }
+
+    const missingModulePaths = pluginNames.filter((name) => !this.pluginModulePaths[name]);
+    if (missingModulePaths.length > 0) {
+      throw new Error(
+        `[Workflows] Missing module paths for plugins: ${missingModulePaths.join(", ")}. ` +
+          `Ensure plugins are created with createPlugin.define() and registered before workflows start.`
+      );
+    }
+
+    const pluginConfigs = serializePluginConfigsOrThrow(this.pluginConfigs, pluginNames);
+    const coreConfig = serializeCoreConfigOrThrow(this.core?.config);
+
     // Create socket for this workflow instance
     const { socketPath, tcpPort } = await socketServer.createSocket(instanceId);
-
-    // Mark workflow as running
-    await this.adapter.updateInstance(instanceId, {
-      status: "running",
-      startedAt: new Date(),
-    });
 
     // Get the executor path
     const currentDir = dirname(fileURLToPath(import.meta.url));
     const executorPath = join(currentDir, "workflow-executor.ts");
 
-    // Prepare config for the executor
+    // Prepare config for the executor, including plugin metadata for local instantiation
     const config = {
       instanceId,
       workflowName: definition.name,
@@ -1204,6 +1271,10 @@ class WorkflowsImpl implements Workflows {
       tcpPort,
       modulePath,
       dbPath: this.dbPath,
+      pluginNames,
+      pluginModulePaths: this.pluginModulePaths,
+      pluginConfigs,
+      coreConfig,
     };
 
     // Spawn the subprocess
@@ -1240,6 +1311,19 @@ class WorkflowsImpl implements Workflows {
     // Set up heartbeat timeout
     this.resetHeartbeatTimeout(instanceId, proc.pid);
 
+    const exitBeforeReady = proc.exited.then((exitCode) => {
+      throw new Error(`Subprocess exited before ready (code ${exitCode})`);
+    });
+
+    try {
+      await Promise.race([this.waitForIsolatedReady(instanceId), exitBeforeReady]);
+    } catch (error) {
+      await this.handleIsolatedStartFailure(instanceId, proc.pid, error);
+      exitBeforeReady.catch(() => undefined);
+      throw error;
+    }
+    exitBeforeReady.catch(() => undefined);
+
     // Handle process exit
     proc.exited.then(async (exitCode) => {
       const info = this.isolatedProcesses.get(instanceId);
@@ -1250,9 +1334,9 @@ class WorkflowsImpl implements Workflows {
       }
       await socketServer.closeSocket(instanceId);
 
-      // Check if workflow is still running (crashed before completion)
+      // Check if workflow is still pending/running (crashed before completion)
       const instance = await this.adapter.getInstance(instanceId);
-      if (instance && instance.status === "running") {
+      if (instance && (instance.status === "running" || instance.status === "pending")) {
         console.error(`[Workflows] Isolated workflow ${instanceId} crashed with exit code ${exitCode}`);
         await this.adapter.updateInstance(instanceId, {
           status: "failed",
@@ -1293,6 +1377,11 @@ class WorkflowsImpl implements Workflows {
     }
 
     switch (type) {
+      case "ready": {
+        this.resolveIsolatedReady(instanceId);
+        break;
+      }
+
       case "started":
       case "heartbeat":
         // No-op: heartbeat handled above, started is handled by executeIsolatedWorkflow
@@ -1382,6 +1471,7 @@ class WorkflowsImpl implements Workflows {
       case "completed": {
         // Clean up isolated process tracking
         this.cleanupIsolatedProcess(instanceId);
+        this.resolveIsolatedReady(instanceId);
 
         // Subprocess already persisted state - just emit events
         await this.emitEvent("workflow.completed", {
@@ -1398,6 +1488,7 @@ class WorkflowsImpl implements Workflows {
       case "failed": {
         // Clean up isolated process tracking
         this.cleanupIsolatedProcess(instanceId);
+        this.rejectIsolatedReady(instanceId, new Error(event.error ?? "Isolated workflow failed"));
 
         // Subprocess already persisted state - just emit events
         await this.emitEvent("workflow.failed", {
@@ -1412,6 +1503,91 @@ class WorkflowsImpl implements Workflows {
           });
         }
         break;
+      }
+    }
+  }
+
+  private waitForIsolatedReady(instanceId: string): Promise<void> {
+    const existing = this.readyWaiters.get(instanceId);
+    if (existing) {
+      return existing.promise;
+    }
+
+    let resolveFn!: () => void;
+    let rejectFn!: (error: Error) => void;
+    const promise = new Promise<void>((resolve, reject) => {
+      resolveFn = resolve;
+      rejectFn = reject;
+    });
+
+    const timeout = setTimeout(() => {
+      this.readyWaiters.delete(instanceId);
+      rejectFn(new Error(`Timed out waiting for isolated workflow ${instanceId} readiness`));
+    }, this.readyTimeoutMs);
+
+    this.readyWaiters.set(instanceId, {
+      promise,
+      resolve: () => resolveFn(),
+      reject: (error) => rejectFn(error),
+      timeout,
+    });
+
+    return promise;
+  }
+
+  private resolveIsolatedReady(instanceId: string): void {
+    const waiter = this.readyWaiters.get(instanceId);
+    if (!waiter) return;
+    clearTimeout(waiter.timeout);
+    this.readyWaiters.delete(instanceId);
+    waiter.resolve();
+  }
+
+  private rejectIsolatedReady(instanceId: string, error: Error): void {
+    const waiter = this.readyWaiters.get(instanceId);
+    if (!waiter) return;
+    clearTimeout(waiter.timeout);
+    this.readyWaiters.delete(instanceId);
+    waiter.reject(error);
+  }
+
+  private async handleIsolatedStartFailure(
+    instanceId: string,
+    pid: number,
+    error: unknown
+  ): Promise<void> {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Process might already be dead
+    }
+
+    this.cleanupIsolatedProcess(instanceId);
+    await this.getSocketServer().closeSocket(instanceId);
+
+    const instance = await this.adapter.getInstance(instanceId);
+    if (instance && (instance.status === "pending" || instance.status === "running")) {
+      await this.adapter.updateInstance(instanceId, {
+        status: "failed",
+        error: errorMessage,
+        completedAt: new Date(),
+      });
+
+      await this.emitEvent("workflow.failed", {
+        instanceId,
+        workflowName: instance.workflowName,
+        error: errorMessage,
+      });
+
+      if (this.sse) {
+        this.sse.broadcast(`workflow:${instanceId}`, "failed", { error: errorMessage });
+        this.sse.broadcast("workflows:all", "workflow.failed", {
+          instanceId,
+          workflowName: instance.workflowName,
+          error: errorMessage,
+        });
       }
     }
   }
@@ -1460,6 +1636,7 @@ class WorkflowsImpl implements Workflows {
       if (info.heartbeatTimeout) clearTimeout(info.heartbeatTimeout);
       this.isolatedProcesses.delete(instanceId);
     }
+    this.rejectIsolatedReady(instanceId, new Error("Isolated workflow cleaned up"));
   }
 
   /**
@@ -1530,6 +1707,102 @@ class WorkflowsImpl implements Workflows {
       await this.eventsService.emit(event, data);
     }
   }
+}
+
+// ============================================
+// Helpers
+// ============================================
+
+function serializePluginConfigsOrThrow(
+  configs: Record<string, any>,
+  pluginNames: string[]
+): Record<string, any> {
+  const result: Record<string, any> = {};
+  const failures: string[] = [];
+
+  for (const name of pluginNames) {
+    if (!(name in configs)) continue;
+    try {
+      assertJsonSerializable(configs[name], `pluginConfigs.${name}`);
+      const serialized = JSON.stringify(configs[name]);
+      result[name] = JSON.parse(serialized);
+    } catch {
+      failures.push(name);
+    }
+  }
+
+  if (failures.length > 0) {
+    throw new Error(
+      `[Workflows] Non-serializable plugin config(s): ${failures.join(", ")}. ` +
+        `Provide JSON-serializable configs for isolated workflows.`
+    );
+  }
+
+  return result;
+}
+
+function serializeCoreConfigOrThrow(config?: Record<string, any>): Record<string, any> | undefined {
+  if (!config) return undefined;
+  try {
+    assertJsonSerializable(config, "coreConfig");
+    const serialized = JSON.stringify(config);
+    return JSON.parse(serialized);
+  } catch {
+    throw new Error(
+      "[Workflows] Core config is not JSON-serializable. Provide JSON-serializable values for isolated workflows."
+    );
+  }
+}
+
+function assertJsonSerializable(value: any, path: string, seen = new WeakSet<object>()): void {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return;
+  }
+
+  if (typeof value === "undefined" || typeof value === "function" || typeof value === "symbol") {
+    throw new Error(`[Workflows] Non-serializable value at ${path}`);
+  }
+
+  if (typeof value === "bigint") {
+    throw new Error(`[Workflows] Non-serializable bigint at ${path}`);
+  }
+
+  if (value instanceof Date) {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      assertJsonSerializable(value[i], `${path}[${i}]`, seen);
+    }
+    return;
+  }
+
+  if (typeof value === "object") {
+    if (seen.has(value)) {
+      throw new Error(`[Workflows] Circular reference at ${path}`);
+    }
+    seen.add(value);
+
+    if (!isPlainObject(value)) {
+      throw new Error(`[Workflows] Non-serializable object at ${path}`);
+    }
+
+    for (const [key, nested] of Object.entries(value)) {
+      assertJsonSerializable(nested, `${path}.${key}`, seen);
+    }
+    return;
+  }
+}
+
+function isPlainObject(value: Record<string, any>): boolean {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
 }
 
 // ============================================

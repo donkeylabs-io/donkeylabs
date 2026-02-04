@@ -12,6 +12,7 @@ import { createServer as createNetServer } from "node:net";
 // ============================================
 
 export type WorkflowEventType =
+  | "ready"
   | "started"
   | "heartbeat"
   | "step.started"

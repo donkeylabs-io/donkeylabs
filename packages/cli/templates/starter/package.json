@@ -1,0 +1,7 @@
+{
+  "name": "donkeylabs-starter",
+  "type": "module",
+  "dependencies": {
+    "@donkeylabs/server": "workspace:*"
+  }
+}
