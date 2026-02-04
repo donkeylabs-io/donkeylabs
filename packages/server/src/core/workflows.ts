@@ -1484,6 +1484,14 @@ class WorkflowsImpl implements Workflows {
           data: event.data,
         };
 
+        const ssePayload = {
+          id: `workflow_event_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          event: event.event,
+          stepName: event.data?.stepName,
+          data: event.data,
+          createdAt: new Date().toISOString(),
+        };
+
         await this.emitEvent("workflow.event", payload);
         if (workflowName) {
           await this.emitEvent(`workflow.${workflowName}.event`, payload);
@@ -1491,14 +1499,28 @@ class WorkflowsImpl implements Workflows {
         await this.emitEvent(`workflow.${instanceId}.event`, payload);
 
         if (this.sse) {
-          this.sse.broadcast(`workflow:${instanceId}`, "event", payload);
-          this.sse.broadcast("workflows:all", "workflow.event", payload);
+          this.sse.broadcast(`workflow:${instanceId}`, "event", ssePayload);
+          this.sse.broadcast("workflows:all", "workflow.event", {
+            ...ssePayload,
+            instanceId,
+            workflowName,
+          });
         }
         break;
       }
 
       case "log": {
         const workflowName = event.workflowName ?? (await this.adapter.getInstance(instanceId))?.workflowName;
+
+        const ssePayload = {
+          id: `workflow_log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          level: event.level,
+          event: "log",
+          stepName: event.data?.stepName,
+          message: event.message,
+          data: event.data,
+          createdAt: new Date().toISOString(),
+        };
 
         if (this.core?.logs && event.level && event.message) {
           this.core.logs.write({
@@ -1512,12 +1534,7 @@ class WorkflowsImpl implements Workflows {
         }
 
         if (this.sse) {
-          this.sse.broadcast(`workflow:${instanceId}`, "log", {
-            level: event.level,
-            message: event.message,
-            data: event.data,
-            workflowName,
-          });
+          this.sse.broadcast(`workflow:${instanceId}`, "log", ssePayload);
         }
         break;
       }

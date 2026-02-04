@@ -126,19 +126,34 @@ describe("isolated workflows", () => {
     });
 
     const instanceId = await workflows.start("event-probe-workflow", {});
+    const sseRecorder = createSseRecorder(sse, `workflow:${instanceId}`);
     await waitForWorkflowCompletion(workflows, instanceId);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     await logs.flush();
 
     const customHistory = await events.getHistory(`workflow.${instanceId}.event`, 5);
     expect(customHistory[0]?.data?.event).toBe("custom");
 
+    const sseEvent = sseRecorder.events.find((evt) => evt.event === "event");
+    expect(sseEvent?.data?.id).toBeTruthy();
+    expect(sseEvent?.data?.event).toBe("custom");
+    expect(sseEvent?.data?.createdAt).toBeTruthy();
+
     const logHistory = await events.getHistory(`log.workflow.${instanceId}`, 5);
     expect(logHistory.length).toBeGreaterThan(0);
+
+    const sseLog = sseRecorder.events.find((evt) => evt.event === "log");
+    expect(sseLog?.data?.id).toBeTruthy();
+    expect(sseLog?.data?.level).toBe("info");
+    expect(sseLog?.data?.message).toBe("workflow log");
+    expect(sseLog?.data?.createdAt).toBeTruthy();
 
     await workflows.stop();
     await jobs.stop();
     logs.stop();
+    await sseRecorder.stop();
     await db.destroy();
     sqlite.close();
     await unlink(dbPath).catch(() => undefined);
@@ -185,6 +200,81 @@ async function waitForWorkflowCompletion(
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`Timed out waiting for workflow ${instanceId} to complete`);
+}
+
+function createSseRecorder(sse: ReturnType<typeof createSSE>, channel: string) {
+  const { client, response } = sse.addClient();
+  sse.subscribe(client.id, channel);
+
+  const events: Array<{ event: string; data: any; id?: string }> = [];
+  const decoder = new TextDecoder();
+  const reader = response.body?.getReader();
+  let stopped = false;
+  let buffer = "";
+
+  const parseChunk = (chunk: string) => {
+    buffer += chunk;
+
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() ?? "";
+
+    for (const part of parts) {
+      const lines = part.split("\n");
+      let eventName = "message";
+      let id: string | undefined;
+      const dataLines: string[] = [];
+
+      for (const line of lines) {
+        if (line.startsWith(":") || line.trim() === "") continue;
+        if (line.startsWith("event:")) {
+          eventName = line.slice(6).trim();
+          continue;
+        }
+        if (line.startsWith("id:")) {
+          id = line.slice(3).trim();
+          continue;
+        }
+        if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).trim());
+        }
+      }
+
+      if (dataLines.length === 0) continue;
+      const dataRaw = dataLines.join("\n");
+      let data: any = dataRaw;
+      try {
+        data = JSON.parse(dataRaw);
+      } catch {
+        // keep as string
+      }
+
+      events.push({ event: eventName, data, id });
+    }
+  };
+
+  const readLoop = async () => {
+    if (!reader) return;
+    while (!stopped) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parseChunk(decoder.decode(value));
+    }
+  };
+
+  readLoop().catch(() => undefined);
+
+  return {
+    events,
+    stop: async () => {
+      stopped = true;
+      try {
+        await reader?.cancel();
+      } catch {
+        // ignore
+      }
+      sse.removeClient(client.id);
+    },
+  };
 }
 
 async function createJobsTable(db: Kysely<any>): Promise<void> {
