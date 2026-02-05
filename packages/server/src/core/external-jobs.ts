@@ -80,6 +80,8 @@ export interface ExternalJobConfig {
   heartbeatTimeout?: number;
   /** Job timeout in milliseconds (optional) */
   timeout?: number;
+  /** Grace period before SIGKILL when terminating (ms, default: 5000) */
+  killGraceMs?: number;
 }
 
 // ============================================
@@ -120,6 +122,8 @@ export interface ExternalJobsConfig {
   defaultHeartbeatTimeout?: number;
   /** Heartbeat check interval in ms (default: 10000) */
   heartbeatCheckInterval?: number;
+  /** Default grace period before SIGKILL when terminating (ms, default: 5000) */
+  killGraceMs?: number;
 }
 
 // ============================================

@@ -58,6 +58,7 @@ describe("Processes Service", () => {
       socket: { socketDir: "/tmp/donkeylabs-test-processes" },
       events,
       heartbeatCheckInterval: 100000, // Long interval for tests
+      killGraceMs: 50,
       autoRecoverOrphans: false, // Disable for unit tests
     });
   });
@@ -173,6 +174,26 @@ describe("Processes Service", () => {
 
       const byName = await processes.getByName("multi");
       expect(byName).toHaveLength(3);
+    });
+
+    it("should terminate a process that exceeds max runtime", async () => {
+      processes.register({
+        name: "runtime-limited",
+        config: {
+          command: "sleep",
+          args: ["5"],
+          limits: { maxRuntimeMs: 50 },
+        },
+      });
+
+      const processId = await processes.spawn("runtime-limited");
+
+      const stopped = await waitFor(async () => {
+        const proc = await processes.get(processId);
+        return proc?.status === "stopped";
+      }, 2000, 50);
+
+      expect(stopped).toBe(true);
     });
   });
 

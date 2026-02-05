@@ -248,7 +248,24 @@ export class WorkflowSocketServerImpl implements WorkflowSocketServer {
 
     let buffer = "";
 
-    socket.on("data", async (data) => {
+    const queue: WorkflowMessage[] = [];
+    let processing = false;
+
+    const processQueue = async () => {
+      if (processing) return;
+      processing = true;
+      while (queue.length > 0) {
+        const message = queue.shift()!;
+        try {
+          await this.handleMessage(instanceId, message);
+        } catch (err) {
+          this.onError?.(err instanceof Error ? err : new Error(String(err)), instanceId);
+        }
+      }
+      processing = false;
+    };
+
+    socket.on("data", (data) => {
       buffer += data.toString();
 
       // Process complete messages (newline-delimited JSON)
@@ -260,11 +277,13 @@ export class WorkflowSocketServerImpl implements WorkflowSocketServer {
 
         try {
           const message = JSON.parse(line) as WorkflowMessage;
-          await this.handleMessage(instanceId, message);
+          queue.push(message);
         } catch (err) {
           this.onError?.(new Error(`Invalid message: ${line}`), instanceId);
         }
       }
+
+      processQueue().catch(() => undefined);
     });
 
     socket.on("error", (err) => {

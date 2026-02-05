@@ -192,6 +192,26 @@ const cancelled = await ctx.core.jobs.cancel(jobId);
 
 ---
 
+## External Jobs (Subprocess)
+
+External jobs run in a separate process and are monitored by a watchdog.
+
+```ts
+ctx.core.jobs.registerExternal("batchWorker", {
+  command: "bun",
+  args: ["./workers/batch-worker.ts"],
+  heartbeatTimeout: 30000,
+  timeout: 10 * 60 * 1000,
+  killGraceMs: 5000,
+});
+```
+
+Watchdog events:
+- `job.watchdog.stale`
+- `job.watchdog.killed`
+
+---
+
 ## Event Integration
 
 Jobs automatically emit events on completion and failure:

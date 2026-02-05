@@ -8,6 +8,7 @@ Processes provide:
 - Long-running daemon management (start, stop, restart)
 - Typed event communication from process to server
 - Automatic heartbeat monitoring
+- Watchdog termination for unresponsive processes
 - Connection resilience with auto-reconnection
 - Metadata passing to spawned processes
 - Cross-platform support (Unix sockets / TCP on Windows)
@@ -89,6 +90,13 @@ server.getCore().processes.define("video-encoder", {
 
   // Heartbeat configuration
   heartbeatTimeout: 30000, // 30 seconds
+
+  // Optional hard limits (requires stats for memory/CPU)
+  limits: {
+    maxRuntimeMs: 60_000,
+    maxMemoryMb: 512,
+    maxCpuPercent: 90,
+  },
 });
 ```
 
@@ -220,6 +228,25 @@ const client = await ProcessClient.connect({
   },
 });
 ```
+
+---
+
+## Hard Limits
+
+Processes can be terminated automatically when limits are exceeded:
+
+- `maxRuntimeMs` always enforced by the server watchdog
+- `maxMemoryMb` and `maxCpuPercent` require `ProcessClient` stats enabled
+
+```ts
+const client = await ProcessClient.connect({
+  stats: { enabled: true, interval: 5000 },
+});
+```
+
+Watchdog events:
+- `process.watchdog.stale`
+- `process.watchdog.killed`
 
 ### Properties
 

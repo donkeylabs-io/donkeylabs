@@ -207,6 +207,23 @@ export class ProcessSocketServerImpl implements ProcessSocketServer {
 
     let buffer = "";
 
+    const queue: ProcessMessage[] = [];
+    let processing = false;
+
+    const processQueue = async () => {
+      if (processing) return;
+      processing = true;
+      while (queue.length > 0) {
+        const message = queue.shift()!;
+        try {
+          await this.onMessage(message);
+        } catch (err) {
+          this.onError?.(err instanceof Error ? err : new Error(String(err)), processId);
+        }
+      }
+      processing = false;
+    };
+
     socket.on("data", (data) => {
       buffer += data.toString();
 
@@ -219,11 +236,13 @@ export class ProcessSocketServerImpl implements ProcessSocketServer {
 
         const message = this.parseMessage(line);
         if (message) {
-          this.onMessage(message);
+          queue.push(message);
         } else {
           this.onError?.(new Error(`Invalid message: ${line}`), processId);
         }
       }
+
+      processQueue().catch(() => undefined);
     });
 
     socket.on("error", (err) => {

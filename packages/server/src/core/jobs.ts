@@ -273,7 +273,10 @@ class JobsImpl implements Jobs {
   private externalConfigs = new Map<string, ExternalJobConfig>();
   private externalConfig: ExternalJobsConfig;
   private socketServer: ExternalJobSocketServer | null = null;
-  private externalProcesses = new Map<string, { pid: number; timeout?: ReturnType<typeof setTimeout> }>();
+  private externalProcesses = new Map<
+    string,
+    { pid: number; timeout?: ReturnType<typeof setTimeout>; killTimer?: ReturnType<typeof setTimeout> }
+  >();
 
   constructor(config: JobsConfig = {}) {
     this.events = config.events;
@@ -521,6 +524,7 @@ class JobsImpl implements Jobs {
 
         const config = this.externalConfigs.get(job.name);
         const heartbeatTimeout = config?.heartbeatTimeout ?? this.externalConfig.defaultHeartbeatTimeout ?? 30000;
+        const killGraceMs = config?.killGraceMs ?? this.externalConfig.killGraceMs ?? 5000;
         const timeSinceHeartbeat = now - job.lastHeartbeat.getTime();
 
         if (timeSinceHeartbeat > heartbeatTimeout) {
@@ -533,36 +537,22 @@ class JobsImpl implements Jobs {
               name: job.name,
               timeSinceHeartbeat,
             });
+            await this.events.emit("job.watchdog.stale", {
+              jobId: job.id,
+              name: job.name,
+              timeSinceHeartbeat,
+            });
           }
 
-          // If stale for 2x timeout, kill the process
-          if (timeSinceHeartbeat > heartbeatTimeout * 2) {
-            console.error(`[Jobs] Killing stale external job ${job.id}`);
-
-            if (job.pid) {
-              try {
-                process.kill(job.pid, "SIGKILL");
-              } catch {
-                // Process may already be dead
-              }
-            }
-
-            await this.adapter.update(job.id, {
-              status: "failed",
-              error: "Heartbeat timeout - job process unresponsive",
-              completedAt: new Date(),
-              processState: "orphaned",
-            });
-
-            await this.cleanupExternalJob(job.id);
-
-            if (this.events) {
-              await this.events.emit("job.failed", {
-                jobId: job.id,
-                name: job.name,
-                error: "Heartbeat timeout",
-              });
-            }
+          const procInfo = this.externalProcesses.get(job.id);
+          if (job.pid && !procInfo?.killTimer) {
+            console.error(`[Jobs] Terminating stale external job ${job.id}`);
+            await this.terminateExternalProcess(
+              job.id,
+              job.pid,
+              killGraceMs,
+              "Heartbeat timeout - job process unresponsive"
+            );
           }
         }
       }
@@ -764,6 +754,9 @@ class JobsImpl implements Jobs {
     if (procInfo?.timeout) {
       clearTimeout(procInfo.timeout);
     }
+    if (procInfo?.killTimer) {
+      clearTimeout(procInfo.killTimer);
+    }
     this.externalProcesses.delete(jobId);
 
     // Close the socket
@@ -901,27 +894,13 @@ class JobsImpl implements Jobs {
       if (config.timeout) {
         const timeout = setTimeout(async () => {
           console.warn(`[Jobs] External job ${job.id} timed out after ${config.timeout}ms`);
-          try {
-            process.kill(proc.pid, "SIGTERM");
-          } catch {
-            // Process may already be dead
-          }
-
-          await this.adapter.update(job.id, {
-            status: "failed",
-            error: `Job timed out after ${config.timeout}ms`,
-            completedAt: new Date(),
-          });
-
-          await this.cleanupExternalJob(job.id);
-
-          if (this.events) {
-            await this.events.emit("job.failed", {
-              jobId: job.id,
-              name: job.name,
-              error: "Timeout",
-            });
-          }
+          const killGraceMs = config.killGraceMs ?? this.externalConfig.killGraceMs ?? 5000;
+          await this.terminateExternalProcess(
+            job.id,
+            proc.pid,
+            killGraceMs,
+            `Job timed out after ${config.timeout}ms`
+          );
         }, config.timeout);
 
         const procInfo = this.externalProcesses.get(job.id);
@@ -995,6 +974,73 @@ class JobsImpl implements Jobs {
       }
 
       this.activeJobs--;
+    }
+  }
+
+  private async terminateExternalProcess(
+    jobId: string,
+    pid: number,
+    killGraceMs: number,
+    error: string
+  ): Promise<void> {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      return;
+    }
+
+    if (killGraceMs <= 0) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // ignore
+      }
+      await this.handleExternalFailure(jobId, error);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        process.kill(pid, 0);
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // ignore
+      }
+
+      await this.handleExternalFailure(jobId, error);
+    }, killGraceMs);
+
+    const procInfo = this.externalProcesses.get(jobId);
+    if (procInfo) {
+      procInfo.killTimer = timer;
+    }
+  }
+
+  private async handleExternalFailure(jobId: string, error: string): Promise<void> {
+    await this.adapter.update(jobId, {
+      status: "failed",
+      error,
+      completedAt: new Date(),
+      processState: "orphaned",
+    });
+
+    const job = await this.adapter.get(jobId);
+    if (this.events && job) {
+      await this.events.emit("job.watchdog.killed", {
+        jobId,
+        name: job.name,
+        reason: error,
+      });
+    }
+
+    await this.cleanupExternalJob(jobId);
+
+    if (this.events && job) {
+      await this.events.emit("job.failed", {
+        jobId,
+        name: job.name,
+        error,
+      });
     }
   }
 

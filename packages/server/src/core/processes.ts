@@ -61,6 +61,15 @@ export interface ProcessConfig {
     /** Timeout before considering unhealthy in ms (default: 60000) */
     timeoutMs?: number;
   };
+  /** Hard limits for the process (optional) */
+  limits?: {
+    /** Max runtime in ms before termination */
+    maxRuntimeMs?: number;
+    /** Max memory (RSS) in MB before termination (requires stats enabled) */
+    maxMemoryMb?: number;
+    /** Max CPU percent before termination (requires stats enabled) */
+    maxCpuPercent?: number;
+  };
 }
 
 export interface ManagedProcess {
@@ -171,6 +180,8 @@ export interface ProcessesConfig {
   heartbeatCheckInterval?: number;
   /** Enable auto-reconnect to orphaned processes on startup (default: true) */
   autoRecoverOrphans?: boolean;
+  /** Grace period before SIGKILL when stopping/killing (ms, default: 5000) */
+  killGraceMs?: number;
 }
 
 // ============================================
@@ -251,6 +262,8 @@ export class ProcessesImpl implements Processes {
   private events?: Events;
   private heartbeatCheckInterval: number;
   private autoRecoverOrphans: boolean;
+  private killGraceMs: number;
+  private runtimeLimitTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   // Track running Bun subprocesses
   private subprocesses = new Map<string, Subprocess>();
@@ -266,6 +279,7 @@ export class ProcessesImpl implements Processes {
     this.events = config.events;
     this.heartbeatCheckInterval = config.heartbeatCheckInterval ?? 10000;
     this.autoRecoverOrphans = config.autoRecoverOrphans ?? true;
+    this.killGraceMs = config.killGraceMs ?? 5000;
 
     // Create socket server with callbacks
     this.socketServer = createProcessSocketServer(config.socket ?? {}, {
@@ -361,6 +375,21 @@ export class ProcessesImpl implements Processes {
       // Set up exit handler for crash detection
       proc.exited.then((exitCode) => this.handleExit(process.id, exitCode));
 
+      const maxRuntimeMs = config.limits?.maxRuntimeMs;
+      if (maxRuntimeMs && maxRuntimeMs > 0) {
+        const timer = setTimeout(async () => {
+          console.warn(`[Processes] Max runtime exceeded for ${name} (${process.id})`);
+          await this.emitEvent("process.limits_exceeded", {
+            processId: process.id,
+            name,
+            reason: "maxRuntimeMs",
+            limit: maxRuntimeMs,
+          });
+          await this.stop(process.id);
+        }, maxRuntimeMs);
+        this.runtimeLimitTimers.set(process.id, timer);
+      }
+
       console.log(`[Processes] Spawned ${name} (${process.id}) with PID ${proc.pid}`);
       return process.id;
     } catch (error) {
@@ -395,7 +424,7 @@ export class ProcessesImpl implements Processes {
         // Wait for process to exit (with timeout)
         const exitPromise = subprocess.exited;
         const timeoutPromise = new Promise<null>((resolve) =>
-          setTimeout(() => resolve(null), 5000)
+          setTimeout(() => resolve(null), this.killGraceMs)
         );
 
         const result = await Promise.race([exitPromise, timeoutPromise]);
@@ -412,6 +441,11 @@ export class ProcessesImpl implements Processes {
     // Cleanup
     await this.socketServer.closeSocket(processId);
     this.subprocesses.delete(processId);
+    const runtimeTimer = this.runtimeLimitTimers.get(processId);
+    if (runtimeTimer) {
+      clearTimeout(runtimeTimer);
+      this.runtimeLimitTimers.delete(processId);
+    }
 
     await this.adapter.update(processId, {
       status: "stopped",
@@ -443,6 +477,11 @@ export class ProcessesImpl implements Processes {
     // Cleanup
     await this.socketServer.closeSocket(processId);
     this.subprocesses.delete(processId);
+    const runtimeTimer = this.runtimeLimitTimers.get(processId);
+    if (runtimeTimer) {
+      clearTimeout(runtimeTimer);
+      this.runtimeLimitTimers.delete(processId);
+    }
 
     await this.adapter.update(processId, {
       status: "stopped",
@@ -588,6 +627,47 @@ export class ProcessesImpl implements Processes {
       const definition = this.definitions.get(proc.name);
       if (definition?.onStats) {
         await definition.onStats(proc, stats);
+      }
+
+      const limits = proc.config.limits;
+      if (limits) {
+        if (limits.maxMemoryMb && stats.memory.rss / 1e6 > limits.maxMemoryMb) {
+          console.warn(`[Processes] Memory limit exceeded for ${proc.name} (${proc.id})`);
+          await this.emitEvent("process.limits_exceeded", {
+            processId,
+            name: proc.name,
+            reason: "maxMemoryMb",
+            limit: limits.maxMemoryMb,
+            value: stats.memory.rss / 1e6,
+          });
+          await this.emitEvent("process.watchdog.killed", {
+            processId,
+            name: proc.name,
+            reason: "maxMemoryMb",
+            value: stats.memory.rss / 1e6,
+          });
+          await this.stop(proc.id);
+          return;
+        }
+
+        if (limits.maxCpuPercent && stats.cpu.percent > limits.maxCpuPercent) {
+          console.warn(`[Processes] CPU limit exceeded for ${proc.name} (${proc.id})`);
+          await this.emitEvent("process.limits_exceeded", {
+            processId,
+            name: proc.name,
+            reason: "maxCpuPercent",
+            limit: limits.maxCpuPercent,
+            value: stats.cpu.percent,
+          });
+          await this.emitEvent("process.watchdog.killed", {
+            processId,
+            name: proc.name,
+            reason: "maxCpuPercent",
+            value: stats.cpu.percent,
+          });
+          await this.stop(proc.id);
+          return;
+        }
       }
 
       return;
@@ -835,16 +915,27 @@ export class ProcessesImpl implements Processes {
             processId: proc.id,
             name: proc.name,
           });
+          await this.emitEvent("process.watchdog.stale", {
+            processId: proc.id,
+            name: proc.name,
+            reason: "heartbeat",
+            timeoutMs,
+          });
 
           const definition = this.definitions.get(proc.name);
           if (definition?.onUnhealthy) {
             await definition.onUnhealthy(proc);
           }
 
-          // If heartbeat is way overdue (2x timeout), kill and restart
+          // If heartbeat is way overdue (2x timeout), stop and restart
           if (now - lastHeartbeat > timeoutMs * 2) {
-            console.warn(`[Processes] Killing unresponsive process ${proc.name} (${proc.id})`);
-            await this.kill(proc.id);
+            console.warn(`[Processes] Stopping unresponsive process ${proc.name} (${proc.id})`);
+            await this.stop(proc.id);
+            await this.emitEvent("process.watchdog.killed", {
+              processId: proc.id,
+              name: proc.name,
+              reason: "heartbeat",
+            });
             // handleExit will trigger auto-restart if configured
           }
         }

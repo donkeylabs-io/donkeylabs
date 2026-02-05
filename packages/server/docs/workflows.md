@@ -309,6 +309,30 @@ workflow("batch.status")
 
 Each poll cycle emits `workflow.step.poll` events and persists progress to the instance.
 
+---
+
+## Watchdog and Subprocess Settings
+
+You can tune subprocess termination and SQLite pragmas used by isolated workflows:
+
+```ts
+const server = new AppServer({
+  db,
+  workflows: {
+    killGraceMs: 5000,
+    sqlitePragmas: {
+      busyTimeout: 5000,
+      journalMode: "WAL",
+      synchronous: "NORMAL",
+    },
+  },
+});
+```
+
+Watchdog events:
+- `workflow.watchdog.stale` (heartbeat missed)
+- `workflow.watchdog.killed` (process terminated)
+
 ### Loop
 
 Use a loop step to jump back to a previous step until a condition is false.

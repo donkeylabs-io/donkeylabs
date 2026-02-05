@@ -32,6 +32,11 @@ export interface SubprocessPluginMetadata {
 export interface SubprocessBootstrapOptions {
   dbPath: string;
   coreConfig?: Record<string, any>;
+  sqlitePragmas?: {
+    busyTimeout?: number;
+    synchronous?: "OFF" | "NORMAL" | "FULL" | "EXTRA";
+    journalMode?: "DELETE" | "TRUNCATE" | "PERSIST" | "MEMORY" | "WAL" | "OFF";
+  };
   pluginMetadata: SubprocessPluginMetadata;
   startServices?: {
     cron?: boolean;
@@ -53,7 +58,15 @@ export async function bootstrapSubprocess(
   options: SubprocessBootstrapOptions
 ): Promise<SubprocessBootstrapResult> {
   const sqlite = new Database(options.dbPath);
-  sqlite.run("PRAGMA busy_timeout = 5000");
+  const pragmas = options.sqlitePragmas;
+  const busyTimeout = pragmas?.busyTimeout ?? 5000;
+  sqlite.run(`PRAGMA busy_timeout = ${busyTimeout}`);
+  if (pragmas?.journalMode) {
+    sqlite.run(`PRAGMA journal_mode = ${pragmas.journalMode}`);
+  }
+  if (pragmas?.synchronous) {
+    sqlite.run(`PRAGMA synchronous = ${pragmas.synchronous}`);
+  }
 
   const db = new Kysely<any>({
     dialect: new BunSqliteDialect({ database: sqlite }),

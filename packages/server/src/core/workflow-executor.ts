@@ -25,6 +25,11 @@ interface ExecutorConfig {
   pluginModulePaths: Record<string, string>;
   pluginConfigs: Record<string, any>;
   coreConfig?: Record<string, any>;
+  sqlitePragmas?: {
+    busyTimeout?: number;
+    synchronous?: "OFF" | "NORMAL" | "FULL" | "EXTRA";
+    journalMode?: "DELETE" | "TRUNCATE" | "PERSIST" | "MEMORY" | "WAL" | "OFF";
+  };
 }
 
 // ============================================
@@ -47,6 +52,7 @@ async function main(): Promise<void> {
     pluginModulePaths,
     pluginConfigs,
     coreConfig,
+    sqlitePragmas,
   } = config;
 
   const socket = await connectToSocket(socketPath, tcpPort);
@@ -71,6 +77,7 @@ async function main(): Promise<void> {
     const bootstrap = await bootstrapSubprocess({
       dbPath,
       coreConfig,
+      sqlitePragmas,
       pluginMetadata: {
         names: pluginNames,
         modulePaths: pluginModulePaths,

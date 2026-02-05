@@ -134,6 +134,7 @@ export {
 export {
   type Workflows,
   type WorkflowsConfig,
+  type SqlitePragmaConfig,
   type WorkflowRegisterOptions,
   type WorkflowDefinition,
   type WorkflowInstance,

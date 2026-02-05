@@ -760,11 +760,21 @@ export interface WorkflowsConfig {
   heartbeatTimeout?: number;
   /** Timeout waiting for isolated subprocess readiness (ms, default: 10000) */
   readyTimeout?: number;
+  /** Grace period before SIGKILL when terminating isolated subprocesses (ms, default: 5000) */
+  killGraceMs?: number;
+  /** SQLite pragmas for isolated subprocess connections */
+  sqlitePragmas?: SqlitePragmaConfig;
   /** Resume strategy for orphaned workflows (default: "blocking") */
   resumeStrategy?: WorkflowResumeStrategy;
 }
 
 export type WorkflowResumeStrategy = "blocking" | "background" | "skip";
+
+export interface SqlitePragmaConfig {
+  busyTimeout?: number;
+  synchronous?: "OFF" | "NORMAL" | "FULL" | "EXTRA";
+  journalMode?: "DELETE" | "TRUNCATE" | "PERSIST" | "MEMORY" | "WAL" | "OFF";
+}
 
 /** Options for registering a workflow */
 export interface WorkflowRegisterOptions {
@@ -854,6 +864,8 @@ class WorkflowsImpl implements Workflows {
   private dbPath?: string;
   private heartbeatTimeoutMs: number;
   private readyTimeoutMs: number;
+  private killGraceMs: number;
+  private sqlitePragmas?: SqlitePragmaConfig;
   private resumeStrategy!: WorkflowResumeStrategy;
   private workflowModulePaths = new Map<string, string>();
   private isolatedProcesses = new Map<string, IsolatedProcessInfo>();
@@ -888,6 +900,8 @@ class WorkflowsImpl implements Workflows {
     this.dbPath = config.dbPath;
     this.heartbeatTimeoutMs = config.heartbeatTimeout ?? 60000;
     this.readyTimeoutMs = config.readyTimeout ?? 10000;
+    this.killGraceMs = config.killGraceMs ?? 5000;
+    this.sqlitePragmas = config.sqlitePragmas;
     this.resumeStrategy = config.resumeStrategy ?? "blocking";
   }
 
@@ -1049,11 +1063,7 @@ class WorkflowsImpl implements Workflows {
     // Kill isolated process if running
     const isolatedInfo = this.isolatedProcesses.get(instanceId);
     if (isolatedInfo) {
-      try {
-        process.kill(isolatedInfo.pid, "SIGTERM");
-      } catch {
-        // Process might already be dead
-      }
+      await killProcessWithGrace(isolatedInfo.pid, this.killGraceMs);
       if (isolatedInfo.timeout) clearTimeout(isolatedInfo.timeout);
       if (isolatedInfo.heartbeatTimeout) clearTimeout(isolatedInfo.heartbeatTimeout);
       this.isolatedProcesses.delete(instanceId);
@@ -1470,6 +1480,7 @@ class WorkflowsImpl implements Workflows {
       pluginModulePaths: this.pluginModulePaths,
       pluginConfigs,
       coreConfig,
+      sqlitePragmas: this.sqlitePragmas,
     };
 
     // Spawn the subprocess
@@ -1995,6 +2006,11 @@ class WorkflowsImpl implements Workflows {
       }
 
       console.error(`[Workflows] No heartbeat from isolated workflow ${instanceId} for ${this.heartbeatTimeoutMs}ms`);
+      await this.emitEvent("workflow.watchdog.stale", {
+        instanceId,
+        reason: "heartbeat",
+        timeoutMs: this.heartbeatTimeoutMs,
+      });
       await this.handleIsolatedTimeout(instanceId, pid);
     }, this.heartbeatTimeoutMs);
   }
@@ -2006,12 +2022,12 @@ class WorkflowsImpl implements Workflows {
     const info = this.isolatedProcesses.get(instanceId);
     if (!info) return;
 
-    // Kill the process
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // Process might already be dead
-    }
+    await killProcessWithGrace(pid, this.killGraceMs);
+    await this.emitEvent("workflow.watchdog.killed", {
+      instanceId,
+      reason: "timeout",
+      timeoutMs: this.heartbeatTimeoutMs,
+    });
 
     // Clean up
     if (info.timeout) clearTimeout(info.timeout);
@@ -2147,4 +2163,30 @@ function isPlainObject(value: Record<string, any>): boolean {
 
 export function createWorkflows(config?: WorkflowsConfig): Workflows {
   return new WorkflowsImpl(config);
+}
+
+async function killProcessWithGrace(pid: number, graceMs: number): Promise<void> {
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+
+  if (graceMs <= 0) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      return;
+    }
+    return;
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, graceMs));
+
+  try {
+    process.kill(pid, 0);
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Process already exited
+  }
 }

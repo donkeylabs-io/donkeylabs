@@ -201,6 +201,23 @@ export class ExternalJobSocketServerImpl implements ExternalJobSocketServer {
 
     let buffer = "";
 
+    const queue: AnyExternalJobMessage[] = [];
+    let processing = false;
+
+    const processQueue = async () => {
+      if (processing) return;
+      processing = true;
+      while (queue.length > 0) {
+        const message = queue.shift()!;
+        try {
+          await this.onMessage(message);
+        } catch (err) {
+          this.onError?.(err instanceof Error ? err : new Error(String(err)), jobId);
+        }
+      }
+      processing = false;
+    };
+
     socket.on("data", (data) => {
       buffer += data.toString();
 
@@ -213,11 +230,13 @@ export class ExternalJobSocketServerImpl implements ExternalJobSocketServer {
 
         const message = parseJobMessage(line);
         if (message) {
-          this.onMessage(message);
+          queue.push(message);
         } else {
           this.onError?.(new Error(`Invalid message: ${line}`), jobId);
         }
       }
+
+      processQueue().catch(() => undefined);
     });
 
     socket.on("error", (err) => {
