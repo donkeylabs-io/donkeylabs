@@ -89,6 +89,19 @@ const instanceId = await ctx.core.workflows.start("process-order", {
 });
 ```
 
+### Concurrency Guard
+
+Limit concurrent instances per workflow name:
+
+```ts
+const server = new AppServer({
+  db,
+  workflows: {
+    concurrentWorkflows: 1, // 0 = unlimited
+  },
+});
+```
+
 ### 3. Track Progress
 
 ```typescript

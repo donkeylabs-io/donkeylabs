@@ -766,6 +766,8 @@ export interface WorkflowsConfig {
   sqlitePragmas?: SqlitePragmaConfig;
   /** Disable in-process watchdog timers (use external watchdog instead) */
   useWatchdog?: boolean;
+  /** Max concurrent instances per workflow name (0 = unlimited, default: 0) */
+  concurrentWorkflows?: number;
   /** Resume strategy for orphaned workflows (default: "blocking") */
   resumeStrategy?: WorkflowResumeStrategy;
 }
@@ -871,6 +873,7 @@ class WorkflowsImpl implements Workflows {
   private killGraceMs: number;
   private sqlitePragmas?: SqlitePragmaConfig;
   private useWatchdog: boolean;
+  private concurrentWorkflows: number;
   private resumeStrategy!: WorkflowResumeStrategy;
   private workflowModulePaths = new Map<string, string>();
   private isolatedProcesses = new Map<string, IsolatedProcessInfo>();
@@ -908,6 +911,7 @@ class WorkflowsImpl implements Workflows {
     this.killGraceMs = config.killGraceMs ?? 5000;
     this.sqlitePragmas = config.sqlitePragmas;
     this.useWatchdog = config.useWatchdog ?? false;
+    this.concurrentWorkflows = config.concurrentWorkflows ?? 0;
     this.resumeStrategy = config.resumeStrategy ?? "blocking";
   }
 
@@ -1004,6 +1008,16 @@ class WorkflowsImpl implements Workflows {
     const definition = this.definitions.get(workflowName);
     if (!definition) {
       throw new Error(`Workflow "${workflowName}" is not registered`);
+    }
+
+    if (this.concurrentWorkflows > 0) {
+      const running = await this.adapter.getInstancesByWorkflow(workflowName, "running");
+      const pending = await this.adapter.getInstancesByWorkflow(workflowName, "pending");
+      if (running.length + pending.length >= this.concurrentWorkflows) {
+        throw new Error(
+          `Workflow "${workflowName}" has reached its concurrency limit (${this.concurrentWorkflows})`
+        );
+      }
     }
 
     const instance = await this.adapter.createInstance({
