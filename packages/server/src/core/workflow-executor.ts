@@ -20,7 +20,7 @@ interface ExecutorConfig {
   socketPath?: string;
   tcpPort?: number;
   modulePath: string;
-  dbPath: string;
+  dbPath?: string;
   pluginNames: string[];
   pluginModulePaths: Record<string, string>;
   pluginConfigs: Record<string, any>;
@@ -29,6 +29,10 @@ interface ExecutorConfig {
     busyTimeout?: number;
     synchronous?: "OFF" | "NORMAL" | "FULL" | "EXTRA";
     journalMode?: "DELETE" | "TRUNCATE" | "PERSIST" | "MEMORY" | "WAL" | "OFF";
+  };
+  database?: {
+    type: "sqlite" | "postgres" | "mysql";
+    connectionString: string;
   };
 }
 
@@ -53,6 +57,7 @@ async function main(): Promise<void> {
     pluginConfigs,
     coreConfig,
     sqlitePragmas,
+    database,
   } = config;
 
   const socket = await connectToSocket(socketPath, tcpPort);
@@ -76,6 +81,7 @@ async function main(): Promise<void> {
 
     const bootstrap = await bootstrapSubprocess({
       dbPath,
+      database,
       coreConfig,
       sqlitePragmas,
       pluginMetadata: {

@@ -1,4 +1,4 @@
-import { Kysely } from "kysely";
+import { Kysely, PostgresDialect, MysqlDialect } from "kysely";
 import { BunSqliteDialect } from "kysely-bun-sqlite";
 import Database from "bun:sqlite";
 import {
@@ -30,12 +30,16 @@ export interface SubprocessPluginMetadata {
 }
 
 export interface SubprocessBootstrapOptions {
-  dbPath: string;
+  dbPath?: string;
   coreConfig?: Record<string, any>;
   sqlitePragmas?: {
     busyTimeout?: number;
     synchronous?: "OFF" | "NORMAL" | "FULL" | "EXTRA";
     journalMode?: "DELETE" | "TRUNCATE" | "PERSIST" | "MEMORY" | "WAL" | "OFF";
+  };
+  database?: {
+    type: "sqlite" | "postgres" | "mysql";
+    connectionString: string;
   };
   pluginMetadata: SubprocessPluginMetadata;
   startServices?: {
@@ -57,20 +61,7 @@ export interface SubprocessBootstrapResult {
 export async function bootstrapSubprocess(
   options: SubprocessBootstrapOptions
 ): Promise<SubprocessBootstrapResult> {
-  const sqlite = new Database(options.dbPath);
-  const pragmas = options.sqlitePragmas;
-  const busyTimeout = pragmas?.busyTimeout ?? 5000;
-  sqlite.run(`PRAGMA busy_timeout = ${busyTimeout}`);
-  if (pragmas?.journalMode) {
-    sqlite.run(`PRAGMA journal_mode = ${pragmas.journalMode}`);
-  }
-  if (pragmas?.synchronous) {
-    sqlite.run(`PRAGMA synchronous = ${pragmas.synchronous}`);
-  }
-
-  const db = new Kysely<any>({
-    dialect: new BunSqliteDialect({ database: sqlite }),
-  });
+  const db = await createSubprocessDatabase(options);
 
   const cache = createCache();
   const events = createEvents();
@@ -166,10 +157,55 @@ export async function bootstrapSubprocess(
     }
 
     await db.destroy();
-    sqlite.close();
   };
 
   return { core, manager, db, workflowAdapter, cleanup };
+}
+
+async function createSubprocessDatabase(options: SubprocessBootstrapOptions): Promise<Kysely<any>> {
+  const dbConfig = options.database;
+  if (!dbConfig || dbConfig.type === "sqlite") {
+    const sqlitePath = dbConfig?.connectionString ?? options.dbPath;
+    if (!sqlitePath) {
+      throw new Error("SQLite dbPath or connectionString is required for subprocess workflows");
+    }
+    const sqlite = new Database(sqlitePath);
+    const pragmas = options.sqlitePragmas;
+    const busyTimeout = pragmas?.busyTimeout ?? 5000;
+    sqlite.run(`PRAGMA busy_timeout = ${busyTimeout}`);
+    if (pragmas?.journalMode) {
+      sqlite.run(`PRAGMA journal_mode = ${pragmas.journalMode}`);
+    }
+    if (pragmas?.synchronous) {
+      sqlite.run(`PRAGMA synchronous = ${pragmas.synchronous}`);
+    }
+
+    return new Kysely<any>({
+      dialect: new BunSqliteDialect({ database: sqlite }),
+    });
+  }
+
+  if (dbConfig.type === "postgres") {
+    // @ts-ignore optional dependency
+    const { Pool: PGPool } = await import("pg");
+    return new Kysely<any>({
+      dialect: new PostgresDialect({
+        pool: new PGPool({ connectionString: dbConfig.connectionString }),
+      }),
+    });
+  }
+
+  if (dbConfig.type === "mysql") {
+    // @ts-ignore optional dependency
+    const { createPool: createMySQLPool } = await import("mysql2");
+    return new Kysely<any>({
+      dialect: new MysqlDialect({
+        pool: createMySQLPool(dbConfig.connectionString),
+      }),
+    });
+  }
+
+  throw new Error(`Unsupported database type: ${dbConfig.type}`);
 }
 
 async function loadConfiguredPlugins(

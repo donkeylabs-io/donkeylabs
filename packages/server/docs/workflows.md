@@ -334,6 +334,10 @@ You can tune subprocess termination and SQLite pragmas used by isolated workflow
 ```ts
 const server = new AppServer({
   db,
+  database: {
+    type: "postgres",
+    connectionString: process.env.DATABASE_URL!,
+  },
   watchdog: {
     enabled: true,
     intervalMs: 5000,

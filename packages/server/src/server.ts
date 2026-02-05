@@ -69,6 +69,11 @@ export interface ServerConfig {
   /** Maximum port attempts if port is in use. Default: 5 */
   maxPortAttempts?: number;
   db: CoreServices["db"];
+  /** Serializable database config for subprocesses */
+  database?: {
+    type: "sqlite" | "postgres" | "mysql";
+    connectionString: string;
+  };
   config?: Record<string, any>;
   /** Auto-generate client types on startup in dev mode */
   generateTypes?: TypeGenerationConfig;
@@ -314,6 +319,7 @@ export class AppServer {
       jobs,
       sse,
       adapter: workflowAdapter,
+      database: options.database,
       useWatchdog: options.watchdog?.enabled ? true : options.workflows?.useWatchdog,
     });
 

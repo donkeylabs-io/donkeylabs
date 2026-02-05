@@ -756,6 +756,8 @@ export interface WorkflowsConfig {
   tcpPortRange?: [number, number];
   /** Database file path (required for isolated workflows) */
   dbPath?: string;
+  /** Database config for isolated workflow subprocesses */
+  database?: WorkflowDatabaseConfig;
   /** Heartbeat timeout in ms (default: 60000) */
   heartbeatTimeout?: number;
   /** Timeout waiting for isolated subprocess readiness (ms, default: 10000) */
@@ -778,6 +780,11 @@ export interface SqlitePragmaConfig {
   busyTimeout?: number;
   synchronous?: "OFF" | "NORMAL" | "FULL" | "EXTRA";
   journalMode?: "DELETE" | "TRUNCATE" | "PERSIST" | "MEMORY" | "WAL" | "OFF";
+}
+
+export interface WorkflowDatabaseConfig {
+  type: "sqlite" | "postgres" | "mysql";
+  connectionString: string;
 }
 
 /** Options for registering a workflow */
@@ -870,6 +877,7 @@ class WorkflowsImpl implements Workflows {
   private socketDir: string;
   private tcpPortRange: [number, number];
   private dbPath?: string;
+  private databaseConfig?: WorkflowDatabaseConfig;
   private heartbeatTimeoutMs: number;
   private readyTimeoutMs: number;
   private killGraceMs: number;
@@ -909,6 +917,7 @@ class WorkflowsImpl implements Workflows {
     this.socketDir = config.socketDir ?? "/tmp/donkeylabs-workflows";
     this.tcpPortRange = config.tcpPortRange ?? [49152, 65535];
     this.dbPath = config.dbPath;
+    this.databaseConfig = config.database;
     this.heartbeatTimeoutMs = config.heartbeatTimeout ?? 60000;
     this.readyTimeoutMs = config.readyTimeout ?? 10000;
     this.killGraceMs = config.killGraceMs ?? 5000;
@@ -948,6 +957,9 @@ class WorkflowsImpl implements Workflows {
   }
 
   async resolveDbPath(): Promise<void> {
+    if (this.databaseConfig && this.databaseConfig.type !== "sqlite") {
+      return;
+    }
     if (this.dbPath) return;
     if (!this.core?.db) return;
 
@@ -1060,8 +1072,9 @@ class WorkflowsImpl implements Workflows {
     // Start execution (isolated or inline based on definition.isolated)
     const isIsolated = definition.isolated !== false;
     const modulePath = this.workflowModulePaths.get(workflowName);
+    const canIsolate = Boolean(this.dbPath || this.databaseConfig);
 
-    if (isIsolated && modulePath && this.dbPath) {
+    if (isIsolated && modulePath && canIsolate) {
       // Execute in isolated subprocess
       await this.executeIsolatedWorkflow(instance.id, definition, input, modulePath);
     } else {
@@ -1070,10 +1083,10 @@ class WorkflowsImpl implements Workflows {
         console.warn(
           `[Workflows] Workflow "${workflowName}" falling back to inline execution (no modulePath)`
         );
-      } else if (isIsolated && modulePath && !this.dbPath) {
+      } else if (isIsolated && modulePath && !canIsolate) {
         console.warn(
           `[Workflows] Workflow "${workflowName}" falling back to inline execution (dbPath could not be auto-detected). ` +
-            `Set workflows.dbPath in your server config to enable isolated execution.`
+            `Set workflows.dbPath or workflows.database in your server config to enable isolated execution.`
         );
       }
       this.startInlineWorkflow(instance.id, definition);
@@ -1513,6 +1526,7 @@ class WorkflowsImpl implements Workflows {
       pluginConfigs,
       coreConfig,
       sqlitePragmas: this.sqlitePragmas,
+      database: this.databaseConfig,
     };
 
     // Spawn the subprocess
