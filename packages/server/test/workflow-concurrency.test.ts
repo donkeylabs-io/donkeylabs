@@ -26,6 +26,43 @@ describe("workflow concurrency guard", () => {
 
     await waitForWorkflowCompletion(workflows, firstId);
   });
+
+  it("supports per-workflow limits via register options", async () => {
+    const workflows = createWorkflows({
+      adapter: new MemoryWorkflowAdapter(),
+      concurrentWorkflows: 0,
+    });
+
+    const limited = workflow("limited")
+      .isolated(false)
+      .task("sleep", {
+        handler: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          return { ok: true };
+        },
+        end: true,
+      })
+      .build();
+
+    const unlimited = workflow("unlimited")
+      .isolated(false)
+      .task("done", {
+        handler: async () => ({ ok: true }),
+        end: true,
+      })
+      .build();
+
+    workflows.register(limited, { maxConcurrent: 1 });
+    workflows.register(unlimited);
+
+    const firstId = await workflows.start("limited", {});
+    await expect(workflows.start("limited", {})).rejects.toThrow("concurrency limit");
+
+    await workflows.start("unlimited", {});
+    await workflows.start("unlimited", {});
+
+    await waitForWorkflowCompletion(workflows, firstId);
+  });
 });
 
 async function waitForWorkflowCompletion(

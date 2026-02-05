@@ -97,9 +97,16 @@ Limit concurrent instances per workflow name:
 const server = new AppServer({
   db,
   workflows: {
-    concurrentWorkflows: 1, // 0 = unlimited
+    concurrentWorkflows: 1, // default for all workflows (0 = unlimited)
+    concurrentWorkflowsByName: {
+      testWorkflow: 1,
+      ingestionWorkflow: 1,
+    },
   },
 });
+
+// Or per-register override
+ctx.core.workflows.register(orderWorkflow, { maxConcurrent: 1 });
 ```
 
 ### 3. Track Progress
