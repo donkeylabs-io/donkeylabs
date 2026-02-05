@@ -768,8 +768,6 @@ export interface WorkflowsConfig {
   useWatchdog?: boolean;
   /** Default max concurrent instances per workflow name (0 = unlimited, default: 0) */
   concurrentWorkflows?: number;
-  /** Per-workflow concurrency overrides */
-  concurrentWorkflowsByName?: Record<string, number>;
   /** Resume strategy for orphaned workflows (default: "blocking") */
   resumeStrategy?: WorkflowResumeStrategy;
 }
@@ -878,7 +876,6 @@ class WorkflowsImpl implements Workflows {
   private sqlitePragmas?: SqlitePragmaConfig;
   private useWatchdog: boolean;
   private concurrentWorkflows: number;
-  private concurrentWorkflowsByName: Record<string, number>;
   private workflowConcurrencyOverrides = new Map<string, number>();
   private resumeStrategy!: WorkflowResumeStrategy;
   private workflowModulePaths = new Map<string, string>();
@@ -918,7 +915,6 @@ class WorkflowsImpl implements Workflows {
     this.sqlitePragmas = config.sqlitePragmas;
     this.useWatchdog = config.useWatchdog ?? false;
     this.concurrentWorkflows = config.concurrentWorkflows ?? 0;
-    this.concurrentWorkflowsByName = config.concurrentWorkflowsByName ?? {};
     this.resumeStrategy = config.resumeStrategy ?? "blocking";
   }
 
@@ -2020,9 +2016,6 @@ class WorkflowsImpl implements Workflows {
   private getConcurrencyLimit(workflowName: string): number {
     if (this.workflowConcurrencyOverrides.has(workflowName)) {
       return this.workflowConcurrencyOverrides.get(workflowName) ?? 0;
-    }
-    if (this.concurrentWorkflowsByName[workflowName] !== undefined) {
-      return this.concurrentWorkflowsByName[workflowName] ?? 0;
     }
     return this.concurrentWorkflows;
   }

@@ -98,14 +98,10 @@ const server = new AppServer({
   db,
   workflows: {
     concurrentWorkflows: 1, // default for all workflows (0 = unlimited)
-    concurrentWorkflowsByName: {
-      testWorkflow: 1,
-      ingestionWorkflow: 1,
-    },
   },
 });
 
-// Or per-register override
+// Per-register override
 ctx.core.workflows.register(orderWorkflow, { maxConcurrent: 1 });
 ```
 
