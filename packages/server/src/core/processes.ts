@@ -170,8 +170,8 @@ export interface SpawnOptions {
 // ============================================
 
 export interface ProcessesConfig {
-  /** SQLite adapter configuration */
-  adapter?: SqliteProcessAdapterConfig;
+  /** Adapter instance or sqlite adapter configuration */
+  adapter?: ProcessAdapter | SqliteProcessAdapterConfig;
   /** Socket server configuration */
   socket?: ProcessSocketConfig;
   /** Events service for emitting process events */
@@ -278,7 +278,11 @@ export class ProcessesImpl implements Processes {
   private isShuttingDown = false;
 
   constructor(config: ProcessesConfig = {}) {
-    this.adapter = new SqliteProcessAdapter(config.adapter);
+    if (config.adapter && typeof (config.adapter as ProcessAdapter).get === "function") {
+      this.adapter = config.adapter as ProcessAdapter;
+    } else {
+      this.adapter = new SqliteProcessAdapter(config.adapter as SqliteProcessAdapterConfig | undefined);
+    }
     this.events = config.events;
     this.heartbeatCheckInterval = config.heartbeatCheckInterval ?? 10000;
     this.autoRecoverOrphans = config.autoRecoverOrphans ?? true;

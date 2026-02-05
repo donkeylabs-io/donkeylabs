@@ -266,6 +266,7 @@ export class AppServer {
     // Create logs service with its own database
     const logsAdapter = options.logs?.adapter ?? new KyselyLogsAdapter({
       dbPath: options.logs?.dbPath,
+      db: options.logs?.db,
     });
     const logs = createLogs({
       ...options.logs,
@@ -296,6 +297,7 @@ export class AppServer {
     // Create adapters - use Kysely by default, or legacy SQLite if requested
     const jobAdapter = options.jobs?.adapter ?? (useLegacy ? undefined : new KyselyJobAdapter(options.db));
     const workflowAdapter = options.workflows?.adapter ?? (useLegacy ? undefined : new KyselyWorkflowAdapter(options.db));
+    const processAdapter = options.processes?.adapter ?? (useLegacy ? undefined : new KyselyProcessAdapter(options.db));
     const auditAdapter = options.audit?.adapter ?? new KyselyAuditAdapter(options.db);
 
     // Jobs can emit events and use Kysely adapter, with logger for scoped logging
@@ -327,6 +329,7 @@ export class AppServer {
     const processes = createProcesses({
       ...options.processes,
       events,
+      adapter: processAdapter,
       useWatchdog: options.watchdog?.enabled ? true : options.processes?.useWatchdog,
     });
 
@@ -1107,7 +1110,13 @@ ${factoryFunction}
     const services = this.watchdogConfig.services ?? ["workflows", "jobs", "processes"];
     const workflowsDbPath = this.coreServices.workflows.getDbPath?.();
     const jobsDbPath = (this.options.jobs?.dbPath ?? workflowsDbPath ?? ".donkeylabs/jobs.db") as string;
-    const processesDbPath = (this.options.processes?.adapter?.path ?? ".donkeylabs/processes.db") as string;
+    const adapterConfig = this.options.processes?.adapter;
+    let processesDbPath: string | undefined;
+    if (adapterConfig && typeof adapterConfig === "object" && "path" in adapterConfig) {
+      processesDbPath = (adapterConfig as any).path ?? ".donkeylabs/processes.db";
+    } else if (!adapterConfig && !this.options.database) {
+      processesDbPath = ".donkeylabs/processes.db";
+    }
 
     const config = {
       intervalMs: this.watchdogConfig.intervalMs ?? 5000,
@@ -1123,6 +1132,7 @@ ${factoryFunction}
       jobs: jobsDbPath ? { dbPath: jobsDbPath } : undefined,
       processes: processesDbPath ? { dbPath: processesDbPath } : undefined,
       sqlitePragmas: this.options.workflows?.sqlitePragmas,
+      database: this.options.database,
     };
 
     try {

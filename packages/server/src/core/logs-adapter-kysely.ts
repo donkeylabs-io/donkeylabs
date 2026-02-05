@@ -49,6 +49,8 @@ const LOG_LEVEL_VALUES: Record<LogLevel, number> = {
 export interface KyselyLogsAdapterConfig {
   /** Database file path (default: ".donkeylabs/logs.db") */
   dbPath?: string;
+  /** Use an existing Kysely instance */
+  db?: Kysely<Database>;
 }
 
 // ============================================
@@ -61,6 +63,11 @@ export class KyselyLogsAdapter implements LogsAdapter {
   private ensureTablePromise: Promise<void> | null = null;
 
   constructor(config: KyselyLogsAdapterConfig = {}) {
+    if (config.db) {
+      this.db = config.db;
+      return;
+    }
+
     const dbPath = config.dbPath ?? ".donkeylabs/logs.db";
 
     // Ensure directory exists

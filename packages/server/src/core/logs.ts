@@ -8,6 +8,7 @@
 
 import type { Events } from "./events";
 import type { LogLevel } from "./logger";
+import type { Kysely } from "kysely";
 
 // ============================================
 // Types
@@ -72,6 +73,8 @@ export interface LogsConfig {
   maxBufferSize?: number;
   /** Database path (default: ".donkeylabs/logs.db") */
   dbPath?: string;
+  /** Use an existing Kysely instance for logs storage */
+  db?: Kysely<any>;
 }
 
 // ============================================
