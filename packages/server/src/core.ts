@@ -544,10 +544,15 @@ export class PluginManager {
    * This table tracks which migrations have been applied for each plugin.
    */
   private async ensureMigrationsTable(): Promise<void> {
-    await this.core.db.schema
+    const table = this.core.db.schema
       .createTable("__donkeylabs_migrations__")
-      .ifNotExists()
-      .addColumn("id", "integer", (col) => col.primaryKey().autoIncrement())
+      .ifNotExists();
+
+    const withId = this.isPostgresDialect()
+      ? table.addColumn("id", "serial", (col) => col.primaryKey())
+      : table.addColumn("id", "integer", (col) => col.primaryKey().autoIncrement());
+
+    await withId
       .addColumn("plugin_name", "text", (col) => col.notNull())
       .addColumn("migration_name", "text", (col) => col.notNull())
       .addColumn("executed_at", "text", (col) => col.defaultTo(sql`CURRENT_TIMESTAMP`))
@@ -557,6 +562,16 @@ export class PluginManager {
     // Using raw SQL since Kysely doesn't have ifNotExists for indexes
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_migrations_unique
               ON __donkeylabs_migrations__(plugin_name, migration_name)`.execute(this.core.db);
+  }
+
+  private isPostgresDialect(): boolean {
+    try {
+      const adapter = (this.core.db as any).getExecutor?.().adapter;
+      const name = adapter?.constructor?.name?.toLowerCase() ?? "";
+      return name.includes("postgres");
+    } catch {
+      return false;
+    }
   }
 
   /**
