@@ -764,6 +764,8 @@ export interface WorkflowsConfig {
   killGraceMs?: number;
   /** SQLite pragmas for isolated subprocess connections */
   sqlitePragmas?: SqlitePragmaConfig;
+  /** Disable in-process watchdog timers (use external watchdog instead) */
+  useWatchdog?: boolean;
   /** Resume strategy for orphaned workflows (default: "blocking") */
   resumeStrategy?: WorkflowResumeStrategy;
 }
@@ -825,6 +827,8 @@ export interface Workflows {
   updateMetadata(instanceId: string, key: string, value: any): Promise<void>;
   /** Set plugin metadata for local instantiation in isolated workflows */
   setPluginMetadata(metadata: PluginMetadata): void;
+  /** Get resolved SQLite db path (for watchdog) */
+  getDbPath(): string | undefined;
 }
 
 export interface PluginMetadata {
@@ -866,6 +870,7 @@ class WorkflowsImpl implements Workflows {
   private readyTimeoutMs: number;
   private killGraceMs: number;
   private sqlitePragmas?: SqlitePragmaConfig;
+  private useWatchdog: boolean;
   private resumeStrategy!: WorkflowResumeStrategy;
   private workflowModulePaths = new Map<string, string>();
   private isolatedProcesses = new Map<string, IsolatedProcessInfo>();
@@ -902,6 +907,7 @@ class WorkflowsImpl implements Workflows {
     this.readyTimeoutMs = config.readyTimeout ?? 10000;
     this.killGraceMs = config.killGraceMs ?? 5000;
     this.sqlitePragmas = config.sqlitePragmas;
+    this.useWatchdog = config.useWatchdog ?? false;
     this.resumeStrategy = config.resumeStrategy ?? "blocking";
   }
 
@@ -960,6 +966,10 @@ class WorkflowsImpl implements Workflows {
     this.pluginConfigs = metadata.configs;
     this.pluginDependencies = metadata.dependencies;
     this.pluginCustomErrors = metadata.customErrors;
+  }
+
+  getDbPath(): string | undefined {
+    return this.dbPath;
   }
 
   async updateMetadata(instanceId: string, key: string, value: any): Promise<void> {
@@ -1517,6 +1527,17 @@ class WorkflowsImpl implements Workflows {
     // Set up heartbeat timeout
     this.resetHeartbeatTimeout(instanceId, proc.pid);
 
+    const instance = await this.adapter.getInstance(instanceId);
+    const metadata = { ...(instance?.metadata ?? {}) } as Record<string, any>;
+    metadata.__watchdog = {
+      ...(metadata.__watchdog ?? {}),
+      pid: proc.pid,
+      socketPath,
+      tcpPort,
+      lastHeartbeat: new Date().toISOString(),
+    };
+    await this.adapter.updateInstance(instanceId, { metadata });
+
     const exitBeforeReady = proc.exited.then((exitCode) => {
       throw new Error(`Subprocess exited before ready (code ${exitCode})`);
     });
@@ -1590,7 +1611,8 @@ class WorkflowsImpl implements Workflows {
 
       case "started":
       case "heartbeat":
-        // No-op: heartbeat handled above, started is handled by executeIsolatedWorkflow
+        // Update heartbeat tracking metadata
+        await this.updateWatchdogHeartbeat(instanceId);
         break;
 
       case "step.started": {
@@ -1958,6 +1980,17 @@ class WorkflowsImpl implements Workflows {
     this.rejectIsolatedReady(instanceId, new Error("Isolated workflow cleaned up"));
   }
 
+  private async updateWatchdogHeartbeat(instanceId: string): Promise<void> {
+    const instance = await this.adapter.getInstance(instanceId);
+    if (!instance) return;
+    const metadata = { ...(instance.metadata ?? {}) } as Record<string, any>;
+    metadata.__watchdog = {
+      ...(metadata.__watchdog ?? {}),
+      lastHeartbeat: new Date().toISOString(),
+    };
+    await this.adapter.updateInstance(instanceId, { metadata });
+  }
+
   private async markOrphanedAsFailed(
     instances: WorkflowInstance[],
     reason: string
@@ -1990,6 +2023,7 @@ class WorkflowsImpl implements Workflows {
    * Reset heartbeat timeout for an isolated workflow
    */
   private resetHeartbeatTimeout(instanceId: string, pid: number): void {
+    if (this.useWatchdog) return;
     const info = this.isolatedProcesses.get(instanceId);
     if (!info) return;
 

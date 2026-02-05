@@ -204,6 +204,13 @@ ctx.core.jobs.registerExternal("batchWorker", {
   timeout: 10 * 60 * 1000,
   killGraceMs: 5000,
 });
+
+// Disable in-process timers when using the watchdog subprocess
+const server = new AppServer({
+  db,
+  watchdog: { enabled: true },
+  jobs: { external: { useWatchdog: true } },
+});
 ```
 
 Watchdog events:

@@ -182,6 +182,8 @@ export interface ProcessesConfig {
   autoRecoverOrphans?: boolean;
   /** Grace period before SIGKILL when stopping/killing (ms, default: 5000) */
   killGraceMs?: number;
+  /** Disable in-process watchdog timers (use external watchdog instead) */
+  useWatchdog?: boolean;
 }
 
 // ============================================
@@ -264,6 +266,7 @@ export class ProcessesImpl implements Processes {
   private autoRecoverOrphans: boolean;
   private killGraceMs: number;
   private runtimeLimitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private useWatchdog: boolean;
 
   // Track running Bun subprocesses
   private subprocesses = new Map<string, Subprocess>();
@@ -280,6 +283,7 @@ export class ProcessesImpl implements Processes {
     this.heartbeatCheckInterval = config.heartbeatCheckInterval ?? 10000;
     this.autoRecoverOrphans = config.autoRecoverOrphans ?? true;
     this.killGraceMs = config.killGraceMs ?? 5000;
+    this.useWatchdog = config.useWatchdog ?? false;
 
     // Create socket server with callbacks
     this.socketServer = createProcessSocketServer(config.socket ?? {}, {
@@ -376,7 +380,7 @@ export class ProcessesImpl implements Processes {
       proc.exited.then((exitCode) => this.handleExit(process.id, exitCode));
 
       const maxRuntimeMs = config.limits?.maxRuntimeMs;
-      if (maxRuntimeMs && maxRuntimeMs > 0) {
+      if (!this.useWatchdog && maxRuntimeMs && maxRuntimeMs > 0) {
         const timer = setTimeout(async () => {
           console.warn(`[Processes] Max runtime exceeded for ${name} (${process.id})`);
           await this.emitEvent("process.limits_exceeded", {
@@ -895,6 +899,7 @@ export class ProcessesImpl implements Processes {
   }
 
   private startHeartbeatMonitor(): void {
+    if (this.useWatchdog) return;
     this.heartbeatMonitor = setInterval(async () => {
       if (this.isShuttingDown) return;
 

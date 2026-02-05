@@ -124,6 +124,8 @@ export interface ExternalJobsConfig {
   heartbeatCheckInterval?: number;
   /** Default grace period before SIGKILL when terminating (ms, default: 5000) */
   killGraceMs?: number;
+  /** Disable in-process watchdog timers (use external watchdog instead) */
+  useWatchdog?: boolean;
 }
 
 // ============================================

@@ -248,6 +248,8 @@ Watchdog events:
 - `process.watchdog.stale`
 - `process.watchdog.killed`
 
+When `watchdog.enabled` is true, heartbeat monitoring runs in the watchdog subprocess.
+
 ### Properties
 
 ```typescript

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PluginManager, type CoreServices, type ConfiguredPlugin } from "./core";
 import { type IRouter, type RouteDefinition, type ServerContext, type HandlerRegistry } from "./router";
 import { Handlers } from "./handlers";
@@ -87,6 +88,13 @@ export interface ServerConfig {
    */
   workflowsResumeStrategy?: "blocking" | "background" | "skip";
   processes?: ProcessesConfig;
+  /** Watchdog subprocess configuration */
+  watchdog?: {
+    enabled?: boolean;
+    intervalMs?: number;
+    services?: ("workflows" | "jobs" | "processes")[];
+    killGraceMs?: number;
+  };
   audit?: AuditConfig;
   websocket?: WebSocketConfig;
   storage?: StorageConfig;
@@ -221,6 +229,9 @@ export class AppServer {
   private generateModeSetup = false;
   private initMode: "adapter" | "server" = "server";
   private workflowsResumeStrategy?: "blocking" | "background" | "skip";
+  private watchdogConfig?: ServerConfig["watchdog"];
+  private watchdogStarted = false;
+  private options: ServerConfig;
 
   // Custom services registry
   private serviceFactories = new Map<string, ServiceFactory<any>>();
@@ -228,11 +239,13 @@ export class AppServer {
   private generateModeTimer?: ReturnType<typeof setTimeout>;
 
   constructor(options: ServerConfig) {
+    this.options = options;
     // Port priority: explicit config > PORT env var > default 3000
     const envPort = process.env.PORT ? parseInt(process.env.PORT, 10) : undefined;
     this.port = options.port ?? envPort ?? 3000;
     this.maxPortAttempts = options.maxPortAttempts ?? 5;
     this.workflowsResumeStrategy = options.workflowsResumeStrategy ?? options.workflows?.resumeStrategy;
+    this.watchdogConfig = options.watchdog;
 
     // Determine if we should use legacy databases
     const useLegacy = options.useLegacyCoreDatabases ?? false;
@@ -286,6 +299,10 @@ export class AppServer {
       events,
       logger,
       adapter: jobAdapter,
+      external: {
+        ...options.jobs?.external,
+        useWatchdog: options.watchdog?.enabled ? true : options.jobs?.external?.useWatchdog,
+      },
       // Disable built-in persistence when using Kysely adapter
       persist: useLegacy ? options.jobs?.persist : false,
     });
@@ -297,12 +314,14 @@ export class AppServer {
       jobs,
       sse,
       adapter: workflowAdapter,
+      useWatchdog: options.watchdog?.enabled ? true : options.workflows?.useWatchdog,
     });
 
     // Processes - still uses its own adapter pattern but can use Kysely
     const processes = createProcesses({
       ...options.processes,
       events,
+      useWatchdog: options.watchdog?.enabled ? true : options.processes?.useWatchdog,
     });
 
     // New services
@@ -1055,6 +1074,7 @@ ${factoryFunction}
       await this.coreServices.workflows.resume();
     }
     this.coreServices.processes.start();
+    await this.startWatchdog();
     logger.info("Background services started (cron, jobs, workflows, processes)");
 
     for (const router of this.routers) {
@@ -1071,6 +1091,69 @@ ${factoryFunction}
     // Initialize custom services, then run onReady handlers
     await this.initializeServices();
     await this.runReadyHandlers();
+  }
+
+  private async startWatchdog(): Promise<void> {
+    if (!this.watchdogConfig?.enabled) return;
+    if (this.watchdogStarted) return;
+
+    const executorPath = join(dirname(fileURLToPath(import.meta.url)), "core", "watchdog-executor.ts");
+    const services = this.watchdogConfig.services ?? ["workflows", "jobs", "processes"];
+    const workflowsDbPath = this.coreServices.workflows.getDbPath?.();
+    const jobsDbPath = (this.options.jobs?.dbPath ?? workflowsDbPath ?? ".donkeylabs/jobs.db") as string;
+    const processesDbPath = (this.options.processes?.adapter?.path ?? ".donkeylabs/processes.db") as string;
+
+    const config = {
+      intervalMs: this.watchdogConfig.intervalMs ?? 5000,
+      services,
+      killGraceMs: this.watchdogConfig.killGraceMs ?? 5000,
+      workflowHeartbeatTimeoutMs: this.options.workflows?.heartbeatTimeout ?? 60000,
+      jobDefaults: {
+        heartbeatTimeoutMs: this.options.jobs?.external?.defaultHeartbeatTimeout ?? 30000,
+        killGraceMs: this.options.jobs?.external?.killGraceMs ?? this.watchdogConfig.killGraceMs ?? 5000,
+      },
+      jobConfigs: this.coreServices.jobs.getExternalJobConfigs(),
+      workflows: workflowsDbPath ? { dbPath: workflowsDbPath } : undefined,
+      jobs: jobsDbPath ? { dbPath: jobsDbPath } : undefined,
+      processes: processesDbPath ? { dbPath: processesDbPath } : undefined,
+      sqlitePragmas: this.options.workflows?.sqlitePragmas,
+    };
+
+    try {
+      this.coreServices.processes.register({
+        name: "__watchdog",
+        config: {
+          command: "bun",
+          args: ["run", executorPath],
+          env: {
+            DONKEYLABS_WATCHDOG_CONFIG: JSON.stringify(config),
+          },
+          heartbeat: { intervalMs: 5000, timeoutMs: 30000 },
+        },
+      });
+    } catch {
+      // Already registered
+    }
+
+    await this.coreServices.processes.spawn("__watchdog", {
+      metadata: { role: "watchdog" },
+    });
+
+    this.coreServices.events.on("process.event", async (data: any) => {
+      if (data?.name !== "__watchdog") return;
+      if (!data.event) return;
+
+      await this.coreServices.events.emit(data.event, data.data ?? {});
+
+      if (data.event.startsWith("workflow.watchdog")) {
+        const instanceId = data.data?.instanceId;
+        if (instanceId && this.coreServices.sse) {
+          this.coreServices.sse.broadcast(`workflow:${instanceId}`, data.event, data.data ?? {});
+        }
+      }
+    });
+
+    this.watchdogStarted = true;
   }
 
   /**

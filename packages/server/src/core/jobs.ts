@@ -141,6 +141,8 @@ export interface Jobs {
   getRunningExternal(): Promise<Job[]>;
   /** Get all jobs with optional filtering (for admin dashboard) */
   getAll(options?: GetAllJobsOptions): Promise<Job[]>;
+  /** Get external job config snapshot for watchdog */
+  getExternalJobConfigs(): Record<string, ExternalJobConfig>;
   /** Start the job processing loop */
   start(): void;
   /** Stop the job processing and cleanup */
@@ -325,6 +327,14 @@ class JobsImpl implements Jobs {
     this.externalConfigs.set(name, config);
   }
 
+  getExternalJobConfigs(): Record<string, ExternalJobConfig> {
+    const snapshot: Record<string, ExternalJobConfig> = {};
+    for (const [name, config] of this.externalConfigs.entries()) {
+      snapshot[name] = { ...config };
+    }
+    return snapshot;
+  }
+
   private isExternalJob(name: string): boolean {
     return this.externalConfigs.has(name);
   }
@@ -422,7 +432,9 @@ class JobsImpl implements Jobs {
     // Initialize socket server for external jobs
     if (this.externalConfigs.size > 0) {
       this.initializeSocketServer();
-      this.startHeartbeatMonitor();
+      if (!this.externalConfig.useWatchdog) {
+        this.startHeartbeatMonitor();
+      }
       // Attempt to reconnect to orphaned jobs from previous run
       this.reconnectOrphanedJobs();
     }
@@ -891,7 +903,7 @@ class JobsImpl implements Jobs {
       proc.stdin.end();
 
       // Set up process timeout if configured
-      if (config.timeout) {
+      if (config.timeout && !this.externalConfig.useWatchdog) {
         const timeout = setTimeout(async () => {
           console.warn(`[Jobs] External job ${job.id} timed out after ${config.timeout}ms`);
           const killGraceMs = config.killGraceMs ?? this.externalConfig.killGraceMs ?? 5000;

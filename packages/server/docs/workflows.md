@@ -318,6 +318,12 @@ You can tune subprocess termination and SQLite pragmas used by isolated workflow
 ```ts
 const server = new AppServer({
   db,
+  watchdog: {
+    enabled: true,
+    intervalMs: 5000,
+    services: ["workflows", "jobs", "processes"],
+    killGraceMs: 5000,
+  },
   workflows: {
     killGraceMs: 5000,
     sqlitePragmas: {
@@ -328,6 +334,8 @@ const server = new AppServer({
   },
 });
 ```
+
+When `watchdog.enabled` is true, workflow heartbeat timers run in the watchdog subprocess instead of the main server.
 
 Watchdog events:
 - `workflow.watchdog.stale` (heartbeat missed)
