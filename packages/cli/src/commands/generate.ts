@@ -70,17 +70,180 @@ async function extractMiddlewareNames(pluginPath: string): Promise<string[]> {
   try {
     const content = await readFile(pluginPath, "utf-8");
 
-    // Look for middleware definitions: `name: createMiddleware(...)`
-    // This works for both old `middleware: { timing: createMiddleware(...) }`
-    // and new `middleware: (ctx) => ({ timing: createMiddleware(...) })`
-    const middlewareNames = [...content.matchAll(/(\w+)\s*:\s*createMiddleware\s*\(/g)]
-      .map((m) => m[1])
-      .filter((name): name is string => !!name);
+    const names = new Set<string>();
 
-    return middlewareNames;
+    // Look for middleware definitions: `name: createMiddleware(...)`
+    // Supports generic config: `name: createMiddleware<Config>(...)`
+    for (const match of content.matchAll(/(\w+)\s*:\s*createMiddleware\s*(?:<[^>]+>)?\s*\(/g)) {
+      if (match[1]) names.add(match[1]);
+    }
+
+    // Look for direct middleware objects: `middleware: { ... }`
+    for (const match of content.matchAll(/middleware\s*:\s*\{/g)) {
+      const openBracePos = (match.index ?? 0) + match[0].length - 1;
+      const block = extractBalancedBlock(content, openBracePos, "{", "}");
+      for (const key of extractTopLevelObjectKeys(block)) {
+        names.add(key);
+      }
+    }
+
+    // Look for middleware factory returning object literal directly:
+    // `middleware: (ctx, service) => ({ ... })`
+    for (const match of content.matchAll(/middleware\s*:\s*\([^)]*\)\s*=>\s*\(\s*\{/g)) {
+      const openBracePos = (match.index ?? 0) + match[0].length - 1;
+      const block = extractBalancedBlock(content, openBracePos, "{", "}");
+      for (const key of extractTopLevelObjectKeys(block)) {
+        names.add(key);
+      }
+    }
+
+    // Look for middleware factory with block body:
+    // `middleware: (...) => { return { ... } }`
+    for (const match of content.matchAll(/middleware\s*:\s*\([^)]*\)\s*=>\s*\{/g)) {
+      const openBracePos = (match.index ?? 0) + match[0].length - 1;
+      const fnBody = extractBalancedBlock(content, openBracePos, "{", "}");
+      if (!fnBody) continue;
+
+      const returnMatch = fnBody.match(/return\s*\{/);
+      if (!returnMatch || returnMatch.index === undefined) continue;
+
+      const returnObjStart = returnMatch.index + returnMatch[0].length - 1;
+      const returnObj = extractBalancedBlock(fnBody, returnObjStart, "{", "}");
+      for (const key of extractTopLevelObjectKeys(returnObj)) {
+        names.add(key);
+      }
+    }
+
+    return [...names];
   } catch {
     return [];
   }
+}
+
+function extractTopLevelObjectKeys(objectBlock: string): string[] {
+  if (!objectBlock || !objectBlock.startsWith("{") || !objectBlock.endsWith("}")) {
+    return [];
+  }
+
+  const keys: string[] = [];
+  const src = objectBlock.slice(1, -1);
+  const len = src.length;
+
+  let i = 0;
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  let parenDepth = 0;
+
+  const isIdentifierStart = (ch: string) => /[A-Za-z_$]/.test(ch);
+  const isIdentifierPart = (ch: string) => /[A-Za-z0-9_$]/.test(ch);
+
+  while (i < len) {
+    const ch = src[i]!;
+
+    // Skip strings
+    if (ch === '"' || ch === "'" || ch === "`") {
+      const quote = ch;
+      i++;
+      while (i < len) {
+        const c = src[i]!;
+        if (c === "\\") {
+          i += 2;
+          continue;
+        }
+        if (c === quote) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+
+    // Skip comments
+    if (ch === "/" && src[i + 1] === "/") {
+      i += 2;
+      while (i < len && src[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && src[i + 1] === "*") {
+      i += 2;
+      while (i + 1 < len && !(src[i] === "*" && src[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+
+    // Track nesting
+    if (ch === "{") {
+      braceDepth++;
+      i++;
+      continue;
+    }
+    if (ch === "}") {
+      braceDepth = Math.max(0, braceDepth - 1);
+      i++;
+      continue;
+    }
+    if (ch === "[") {
+      bracketDepth++;
+      i++;
+      continue;
+    }
+    if (ch === "]") {
+      bracketDepth = Math.max(0, bracketDepth - 1);
+      i++;
+      continue;
+    }
+    if (ch === "(") {
+      parenDepth++;
+      i++;
+      continue;
+    }
+    if (ch === ")") {
+      parenDepth = Math.max(0, parenDepth - 1);
+      i++;
+      continue;
+    }
+
+    // Parse top-level keys only
+    if (braceDepth === 0 && bracketDepth === 0 && parenDepth === 0) {
+      // Skip whitespace and commas
+      if (/\s|,/.test(ch)) {
+        i++;
+        continue;
+      }
+
+      let key = "";
+      const keyStart = i;
+
+      // Identifier key: authRequired: ... or authRequired(...) { ... }
+      if (isIdentifierStart(ch)) {
+        i++;
+        while (i < len && isIdentifierPart(src[i]!)) i++;
+        key = src.slice(keyStart, i);
+      } else {
+        i++;
+        continue;
+      }
+
+      // Skip optional marker and whitespace
+      while (i < len && /\s/.test(src[i]!)) i++;
+      if (src[i] === "?") {
+        i++;
+        while (i < len && /\s/.test(src[i]!)) i++;
+      }
+
+      // Object property or method shorthand
+      if (src[i] === ":" || src[i] === "(") {
+        keys.push(key);
+      }
+
+      continue;
+    }
+
+    i++;
+  }
+
+  return keys;
 }
 
 interface ServiceDefinitionInfo {
@@ -1270,4 +1433,3 @@ ${eventRegistryEntries.join("\n")}
 
   await writeFile(join(outPath, "events.ts"), content);
 }
-
