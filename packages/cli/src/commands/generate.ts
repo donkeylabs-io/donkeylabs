@@ -7,6 +7,7 @@ import { Kysely, Migrator, FileMigrationProvider } from "kysely";
 import { BunSqliteDialect } from "kysely-bun-sqlite";
 import { Database } from "bun:sqlite";
 import { generate, KyselyBunSqliteDialect } from "kysely-codegen";
+import * as ts from "typescript";
 
 interface DonkeylabsConfig {
   plugins: string[];
@@ -69,55 +70,144 @@ async function extractHandlerNames(pluginPath: string): Promise<string[]> {
 async function extractMiddlewareNames(pluginPath: string): Promise<string[]> {
   try {
     const content = await readFile(pluginPath, "utf-8");
-
-    const names = new Set<string>();
-
-    // Look for middleware definitions: `name: createMiddleware(...)`
-    // Supports generic config: `name: createMiddleware<Config>(...)`
-    for (const match of content.matchAll(/(\w+)\s*:\s*createMiddleware\s*(?:<[^>]+>)?\s*\(/g)) {
-      if (match[1]) names.add(match[1]);
+    const astNames = extractMiddlewareNamesFromAst(content, pluginPath);
+    if (astNames.length > 0) {
+      return astNames;
     }
 
-    // Look for direct middleware objects: `middleware: { ... }`
-    for (const match of content.matchAll(/middleware\s*:\s*\{/g)) {
-      const openBracePos = (match.index ?? 0) + match[0].length - 1;
-      const block = extractBalancedBlock(content, openBracePos, "{", "}");
-      for (const key of extractTopLevelObjectKeys(block)) {
-        names.add(key);
-      }
-    }
-
-    // Look for middleware factory returning object literal directly:
-    // `middleware: (ctx, service) => ({ ... })`
-    for (const match of content.matchAll(/middleware\s*:\s*\([^)]*\)\s*=>\s*\(\s*\{/g)) {
-      const openBracePos = (match.index ?? 0) + match[0].length - 1;
-      const block = extractBalancedBlock(content, openBracePos, "{", "}");
-      for (const key of extractTopLevelObjectKeys(block)) {
-        names.add(key);
-      }
-    }
-
-    // Look for middleware factory with block body:
-    // `middleware: (...) => { return { ... } }`
-    for (const match of content.matchAll(/middleware\s*:\s*\([^)]*\)\s*=>\s*\{/g)) {
-      const openBracePos = (match.index ?? 0) + match[0].length - 1;
-      const fnBody = extractBalancedBlock(content, openBracePos, "{", "}");
-      if (!fnBody) continue;
-
-      const returnMatch = fnBody.match(/return\s*\{/);
-      if (!returnMatch || returnMatch.index === undefined) continue;
-
-      const returnObjStart = returnMatch.index + returnMatch[0].length - 1;
-      const returnObj = extractBalancedBlock(fnBody, returnObjStart, "{", "}");
-      for (const key of extractTopLevelObjectKeys(returnObj)) {
-        names.add(key);
-      }
-    }
-
-    return [...names];
+    return extractMiddlewareNamesRegexFallback(content);
   } catch {
     return [];
   }
+}
+
+function extractMiddlewareNamesFromAst(content: string, fileName: string): string[] {
+  const sourceFile = ts.createSourceFile(fileName, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+
+  const names = new Set<string>();
+
+  const addFromObjectLiteral = (obj: ts.ObjectLiteralExpression) => {
+    for (const prop of obj.properties) {
+      if (!ts.isPropertyAssignment(prop) && !ts.isMethodDeclaration(prop)) continue;
+      const propName = getStaticPropertyName(prop.name);
+      if (propName && isSafeIdentifier(propName)) {
+        names.add(propName);
+      }
+    }
+  };
+
+  const collectFromMiddlewareInitializer = (initializer: ts.Expression) => {
+    if (ts.isObjectLiteralExpression(initializer)) {
+      addFromObjectLiteral(initializer);
+      return;
+    }
+
+    if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) {
+      const body = initializer.body;
+
+      if (ts.isObjectLiteralExpression(body)) {
+        addFromObjectLiteral(body);
+        return;
+      }
+
+      if (ts.isParenthesizedExpression(body) && ts.isObjectLiteralExpression(body.expression)) {
+        addFromObjectLiteral(body.expression);
+        return;
+      }
+
+      if (ts.isBlock(body)) {
+        for (const stmt of body.statements) {
+          if (!ts.isReturnStatement(stmt) || !stmt.expression) continue;
+
+          if (ts.isObjectLiteralExpression(stmt.expression)) {
+            addFromObjectLiteral(stmt.expression);
+            return;
+          }
+
+          if (
+            ts.isParenthesizedExpression(stmt.expression) &&
+            ts.isObjectLiteralExpression(stmt.expression.expression)
+          ) {
+            addFromObjectLiteral(stmt.expression.expression);
+            return;
+          }
+        }
+      }
+    }
+  };
+
+  const visit = (node: ts.Node) => {
+    if (ts.isPropertyAssignment(node)) {
+      const propName = getStaticPropertyName(node.name);
+      if (propName === "middleware") {
+        collectFromMiddlewareInitializer(node.initializer);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(sourceFile);
+  return [...names];
+}
+
+function getStaticPropertyName(name: ts.PropertyName): string | null {
+  if (ts.isIdentifier(name)) return name.text;
+  if (ts.isStringLiteral(name)) return name.text;
+  if (ts.isNoSubstitutionTemplateLiteral(name)) return name.text;
+  if (ts.isNumericLiteral(name)) return name.text;
+  return null;
+}
+
+function isSafeIdentifier(name: string): boolean {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name);
+}
+
+function extractMiddlewareNamesRegexFallback(content: string): string[] {
+  const names = new Set<string>();
+
+  // Look for middleware definitions: `name: createMiddleware(...)`
+  // Supports generic config: `name: createMiddleware<Config>(...)`
+  for (const match of content.matchAll(/(\w+)\s*:\s*createMiddleware\s*(?:<[^>]+>)?\s*\(/g)) {
+    if (match[1]) names.add(match[1]);
+  }
+
+  // Look for direct middleware objects: `middleware: { ... }`
+  for (const match of content.matchAll(/middleware\s*:\s*\{/g)) {
+    const openBracePos = (match.index ?? 0) + match[0].length - 1;
+    const block = extractBalancedBlock(content, openBracePos, "{", "}");
+    for (const key of extractTopLevelObjectKeys(block)) {
+      names.add(key);
+    }
+  }
+
+  // Look for middleware factory returning object literal directly:
+  // `middleware: (ctx, service) => ({ ... })`
+  for (const match of content.matchAll(/middleware\s*:\s*\([^)]*\)\s*=>\s*\(\s*\{/g)) {
+    const openBracePos = (match.index ?? 0) + match[0].length - 1;
+    const block = extractBalancedBlock(content, openBracePos, "{", "}");
+    for (const key of extractTopLevelObjectKeys(block)) {
+      names.add(key);
+    }
+  }
+
+  // Look for middleware factory with block body:
+  // `middleware: (...) => { return { ... } }`
+  for (const match of content.matchAll(/middleware\s*:\s*\([^)]*\)\s*=>\s*\{/g)) {
+    const openBracePos = (match.index ?? 0) + match[0].length - 1;
+    const fnBody = extractBalancedBlock(content, openBracePos, "{", "}");
+    if (!fnBody) continue;
+
+    const returnMatch = fnBody.match(/return\s*\{/);
+    if (!returnMatch || returnMatch.index === undefined) continue;
+
+    const returnObjStart = returnMatch.index + returnMatch[0].length - 1;
+    const returnObj = extractBalancedBlock(fnBody, returnObjStart, "{", "}");
+    for (const key of extractTopLevelObjectKeys(returnObj)) {
+      names.add(key);
+    }
+  }
+
+  return [...names];
 }
 
 function extractTopLevelObjectKeys(objectBlock: string): string[] {
