@@ -751,12 +751,13 @@ export class WorkflowStateMachine {
 
     this.events.onStepCompleted(instanceId, stepName, output, nextStep);
 
-    // Calculate progress
+    // Calculate progress — re-fetch after persist to get accurate count
+    const updated = await this.adapter.getInstance(instanceId);
     const totalSteps = definition.steps.size;
-    const completedSteps = Object.values(instance.stepResults).filter(
-      (r) => r.status === "completed",
-    ).length + 1; // +1 for current step
-    const progress = Math.round((completedSteps / totalSteps) * 100);
+    const completedSteps = updated
+      ? Object.values(updated.stepResults).filter((r) => r.status === "completed").length
+      : 1;
+    const progress = Math.min(100, Math.round((completedSteps / totalSteps) * 100));
 
     this.events.onProgress(instanceId, progress, stepName, completedSteps, totalSteps);
   }

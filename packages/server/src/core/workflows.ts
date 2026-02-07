@@ -1762,20 +1762,21 @@ class WorkflowsImpl implements Workflows {
         await this.emitEvent("workflow.progress", {
           instanceId,
           progress: event.progress,
+          currentStep: event.stepName,
           completedSteps: event.completedSteps,
           totalSteps: event.totalSteps,
         });
         if (this.sse) {
           this.sse.broadcast(`workflow:${instanceId}`, "progress", {
             progress: event.progress,
+            currentStep: event.stepName,
             completedSteps: event.completedSteps,
             totalSteps: event.totalSteps,
           });
           this.sse.broadcast("workflows:all", "workflow.progress", {
             instanceId,
             progress: event.progress,
-            completedSteps: event.completedSteps,
-            totalSteps: event.totalSteps,
+            currentStep: event.stepName,
           });
         }
         break;

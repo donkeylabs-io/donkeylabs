@@ -55,16 +55,93 @@ async function getPluginDefinedName(pluginPath: string): Promise<string | null> 
 async function extractHandlerNames(pluginPath: string): Promise<string[]> {
   try {
     const content = await readFile(pluginPath, "utf-8");
-    const handlersMatch = content.match(/handlers:\s*\{([^}]+)\}/);
-    if (!handlersMatch?.[1]) return [];
+    const astNames = extractHandlerNamesFromAst(content, pluginPath);
+    if (astNames.length > 0) {
+      return astNames;
+    }
 
-    const handlersBlock = handlersMatch[1];
-    return [...handlersBlock.matchAll(/(\w+)\s*:/g)]
-      .map((m) => m[1])
-      .filter((name): name is string => !!name);
+    return extractHandlerNamesRegexFallback(content);
   } catch {
     return [];
   }
+}
+
+function extractHandlerNamesFromAst(content: string, fileName: string): string[] {
+  const sourceFile = ts.createSourceFile(fileName, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const names = new Set<string>();
+
+  const addFromObjectLiteral = (obj: ts.ObjectLiteralExpression) => {
+    for (const prop of obj.properties) {
+      if (!ts.isPropertyAssignment(prop) && !ts.isMethodDeclaration(prop)) continue;
+      const propName = getStaticPropertyName(prop.name);
+      if (propName && isSafeIdentifier(propName)) {
+        names.add(propName);
+      }
+    }
+  };
+
+  const collectFromHandlersInitializer = (initializer: ts.Expression) => {
+    if (ts.isObjectLiteralExpression(initializer)) {
+      addFromObjectLiteral(initializer);
+      return;
+    }
+
+    if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) {
+      const body = initializer.body;
+
+      if (ts.isObjectLiteralExpression(body)) {
+        addFromObjectLiteral(body);
+        return;
+      }
+
+      if (ts.isParenthesizedExpression(body) && ts.isObjectLiteralExpression(body.expression)) {
+        addFromObjectLiteral(body.expression);
+        return;
+      }
+
+      if (ts.isBlock(body)) {
+        for (const stmt of body.statements) {
+          if (!ts.isReturnStatement(stmt) || !stmt.expression) continue;
+
+          if (ts.isObjectLiteralExpression(stmt.expression)) {
+            addFromObjectLiteral(stmt.expression);
+            return;
+          }
+
+          if (
+            ts.isParenthesizedExpression(stmt.expression) &&
+            ts.isObjectLiteralExpression(stmt.expression.expression)
+          ) {
+            addFromObjectLiteral(stmt.expression.expression);
+            return;
+          }
+        }
+      }
+    }
+  };
+
+  const visit = (node: ts.Node) => {
+    if (ts.isPropertyAssignment(node)) {
+      const propName = getStaticPropertyName(node.name);
+      if (propName === "handlers") {
+        collectFromHandlersInitializer(node.initializer);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(sourceFile);
+  return [...names];
+}
+
+function extractHandlerNamesRegexFallback(content: string): string[] {
+  const handlersMatch = content.match(/handlers:\s*\{([^}]+)\}/);
+  if (!handlersMatch?.[1]) return [];
+
+  const handlersBlock = handlersMatch[1];
+  return [...handlersBlock.matchAll(/(\w+)\s*:/g)]
+    .map((m) => m[1])
+    .filter((name): name is string => !!name);
 }
 
 async function extractMiddlewareNames(pluginPath: string): Promise<string[]> {
@@ -358,80 +435,47 @@ interface EventDefinitionInfo {
 async function extractEventsFromFile(filePath: string): Promise<EventDefinitionInfo[]> {
   try {
     const content = await readFile(filePath, "utf-8");
+    const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     const events: EventDefinitionInfo[] = [];
 
-    // Find defineEvents call
-    const defineEventsMatch = content.match(/defineEvents\s*\(\s*\{/);
-    if (!defineEventsMatch || defineEventsMatch.index === undefined) {
-      return events;
-    }
+    const addFromObjectLiteral = (obj: ts.ObjectLiteralExpression) => {
+      for (const prop of obj.properties) {
+        if (!ts.isPropertyAssignment(prop)) continue;
+        const eventName = getEventNameFromPropertyName(prop.name);
+        if (!eventName) continue;
 
-    // Extract the object block
-    const blockStart = defineEventsMatch.index + defineEventsMatch[0].length - 1;
-    const block = extractBalancedBlock(content, blockStart, "{", "}");
-    if (!block) return events;
+        const schemaSource = prop.initializer.getText(sourceFile).trim();
+        if (!schemaSource) continue;
 
-    // Parse event entries: "event.name": z.object({...})
-    // Match quoted keys followed by Zod schemas
-    const eventPattern = /["']([^"']+)["']\s*:\s*(z\.[^,}]+(?:\([^)]*\))?)/g;
+        events.push({ name: eventName, schemaSource });
+      }
+    };
 
-    let match;
-    const innerBlock = block.slice(1, -1); // Remove outer braces
-
-    // More robust extraction - find each event key and its schema
-    const keyPattern = /["']([a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)*)["']\s*:/gi;
-    let keyMatch;
-    const keyPositions: { name: string; pos: number }[] = [];
-
-    while ((keyMatch = keyPattern.exec(innerBlock)) !== null) {
-      keyPositions.push({ name: keyMatch[1]!, pos: keyMatch.index + keyMatch[0].length });
-    }
-
-    // For each key, extract the Zod schema that follows
-    for (let i = 0; i < keyPositions.length; i++) {
-      const { name, pos } = keyPositions[i]!;
-      const nextPos = keyPositions[i + 1]?.pos ?? innerBlock.length;
-
-      // Get the slice between this key and the next
-      let schemaSlice = innerBlock.slice(pos, nextPos).trim();
-
-      // Find where the Zod expression ends
-      if (schemaSlice.startsWith("z.")) {
-        // Extract balanced parentheses for the schema
-        let depth = 0;
-        let endIdx = 0;
-        let foundParen = false;
-
-        for (let j = 0; j < schemaSlice.length; j++) {
-          if (schemaSlice[j] === "(") {
-            depth++;
-            foundParen = true;
-          } else if (schemaSlice[j] === ")") {
-            depth--;
-            if (depth === 0 && foundParen) {
-              endIdx = j + 1;
-              // Check for chained methods
-              const rest = schemaSlice.slice(endIdx);
-              const chainMatch = rest.match(/^(\s*\.\w+\([^)]*\))+/);
-              if (chainMatch) {
-                endIdx += chainMatch[0].length;
-              }
-              break;
-            }
-          }
-        }
-
-        if (endIdx > 0) {
-          const schema = schemaSlice.slice(0, endIdx).trim();
-          events.push({ name, schemaSource: schema });
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "defineEvents") {
+        const firstArg = node.arguments[0];
+        if (firstArg && ts.isObjectLiteralExpression(firstArg)) {
+          addFromObjectLiteral(firstArg);
         }
       }
-    }
+      ts.forEachChild(node, visit);
+    };
 
+    visit(sourceFile);
     return events;
   } catch {
     return [];
   }
+}
+
+function getEventNameFromPropertyName(name: ts.PropertyName): string | null {
+  if (ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name)) {
+    return name.text;
+  }
+  if (ts.isIdentifier(name)) {
+    return name.text;
+  }
+  return null;
 }
 
 /**

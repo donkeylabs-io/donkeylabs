@@ -303,39 +303,50 @@ service: (ctx) => ({
 })
 ```
 
-### DON'T: Create Unnecessary Files
+### DON'T: Create Unnecessary Files (But DO Split When Needed)
 
-```ts
-// BAD: Over-engineered structure
-plugins/auth/
-├── index.ts
-├── schema.ts
-├── types/
-│   ├── index.ts
-│   ├── user.ts
-│   ├── session.ts
-│   └── token.ts
-├── services/
-│   ├── index.ts
-│   ├── user.service.ts
-│   └── auth.service.ts
-├── handlers/
-│   └── custom.handler.ts
-├── middleware/
-│   └── auth.middleware.ts
-├── utils/
-│   ├── hash.ts
-│   └── token.ts
-└── migrations/
+The right structure depends on plugin size. Don't create files you don't need, but don't cram everything into one file either.
+
 ```
+// Small plugin (< 200 lines) — single file is fine
+plugins/notifications/
+├── index.ts          // Everything here
+├── schema.ts
+└── migrations/
 
-```ts
-// GOOD: Keep it simple
+// Medium plugin (200-500 lines) — extract service
+plugins/orders/
+├── index.ts          // Plugin definition + wiring only
+├── service.ts        // Service class with business logic
+├── schema.ts
+└── migrations/
+
+// Large plugin (500+ lines) — full split
 plugins/auth/
-├── index.ts      // Everything in one file, or max 2-3
+├── index.ts          // Plugin definition + wiring (< 100 lines)
+├── types.ts          // Interfaces, type aliases
+├── service.ts        // Service class with business logic
+├── helpers.ts        // Pure utility functions
+├── constants.ts      // Configuration constants
 ├── schema.ts
 └── migrations/
 ```
+
+**Avoid** deeply nested subdirectories (`types/`, `services/`, `utils/`). Flat files at the plugin root are enough:
+
+```ts
+// BAD: Nested subdirectories with barrel exports
+plugins/auth/types/index.ts
+plugins/auth/types/user.ts
+plugins/auth/services/index.ts
+plugins/auth/services/auth.service.ts
+
+// GOOD: Flat files at plugin root
+plugins/auth/types.ts
+plugins/auth/service.ts
+```
+
+See [Code Organization Guide](./code-organization.md) for detailed rules on when and how to split.
 
 ### DON'T: Edit Generated Files
 
@@ -484,7 +495,7 @@ When adding a new feature:
 1. **Putting business logic in route handlers** - Use plugin services
 2. **Not using Zod validation** - Always validate input
 3. **Editing generated files** - Regenerate instead
-4. **Creating too many files** - Keep plugins simple
+4. **Wrong file granularity** - Split at 200 lines, see [Code Organization Guide](./code-organization.md)
 5. **Not running gen:registry** - Do this after any plugin change
 6. **Manual auth/rate limit checks** - Use middleware
 7. **Console.log for logging** - Use `ctx.core.logger`

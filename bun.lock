@@ -1,5 +1,6 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "donkeylabs-monorepo",
@@ -29,15 +30,22 @@
     },
     "packages/adapter-sveltekit": {
       "name": "@donkeylabs/adapter-sveltekit",
-      "version": "2.0.14",
+      "version": "2.0.17",
       "peerDependencies": {
         "@donkeylabs/server": "^2.0.6",
         "@sveltejs/kit": "^2.0.0",
       },
     },
+    "packages/adapter-swift": {
+      "name": "@donkeylabs/adapter-swift",
+      "version": "0.1.0",
+      "peerDependencies": {
+        "@donkeylabs/server": "^2.0.6",
+      },
+    },
     "packages/cli": {
       "name": "@donkeylabs/cli",
-      "version": "2.0.14",
+      "version": "2.0.22",
       "bin": {
         "donkeylabs": "./src/index.ts",
       },
@@ -48,6 +56,7 @@
         "picocolors": "^1.1.1",
         "prompts": "^2.4.2",
         "sharp": "^0.33.0",
+        "typescript": "^5.0.0",
         "zod": "^3.23.0",
       },
       "devDependencies": {
@@ -79,7 +88,7 @@
     },
     "packages/mcp": {
       "name": "@donkeylabs/mcp",
-      "version": "2.0.9",
+      "version": "2.0.10",
       "bin": {
         "donkeylabs-mcp": "./src/server.ts",
       },
@@ -123,7 +132,7 @@
     },
     "packages/server": {
       "name": "@donkeylabs/server",
-      "version": "2.0.18",
+      "version": "2.0.37",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.25.2",
         "picocolors": "^1.1.1",
@@ -236,6 +245,8 @@
     "@donkeylabs/adapter-serverless": ["@donkeylabs/adapter-serverless@workspace:packages/adapter-serverless"],
 
     "@donkeylabs/adapter-sveltekit": ["@donkeylabs/adapter-sveltekit@workspace:packages/adapter-sveltekit"],
+
+    "@donkeylabs/adapter-swift": ["@donkeylabs/adapter-swift@workspace:packages/adapter-swift"],
 
     "@donkeylabs/cli": ["@donkeylabs/cli@workspace:packages/cli"],
 

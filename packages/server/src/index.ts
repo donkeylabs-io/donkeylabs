@@ -4,6 +4,7 @@
 export {
   AppServer,
   type ServerConfig,
+  type ShutdownConfig,
   // Lifecycle hooks
   type HookContext,
   type OnReadyHandler,
@@ -91,13 +92,33 @@ export function defineConfig(config: DonkeylabsConfig): DonkeylabsConfig {
 // Re-export HttpError for custom error creation
 export { HttpError } from "./core/errors";
 
+// Versioning
+export {
+  parseSemVer,
+  type SemVer,
+  type VersioningConfig,
+  type DeprecationInfo,
+  type RouterOptions,
+} from "./versioning";
+
 // Core services types
 export {
   type Logger,
   type LogLevel,
   type ErrorFactory,
   type ErrorFactories,
+  type EventMetadata,
 } from "./core/index";
+
+// Health checks
+export {
+  type Health,
+  type HealthCheck,
+  type HealthCheckResult,
+  type HealthConfig,
+  type HealthResponse,
+  type HealthStatus,
+} from "./core/health";
 
 // Logs (persistent logging)
 export {

@@ -11,20 +11,33 @@ export interface Subscription {
   unsubscribe(): void;
 }
 
+export interface EventMetadata {
+  traceId?: string;
+  source?: string;
+  [key: string]: any;
+}
+
 export interface EventRecord {
   event: string;
   data: any;
   timestamp: Date;
+  metadata?: EventMetadata;
 }
 
 export interface EventAdapter {
-  publish(event: string, data: any): Promise<void>;
+  publish(event: string, data: any, metadata?: EventMetadata): Promise<void>;
   getHistory(event: string, limit?: number): Promise<EventRecord[]>;
+  /** Subscribe to events from other instances (for distributed adapters) */
+  subscribe?(callback: (event: string, data: any, metadata?: EventMetadata) => void): Promise<void>;
+  /** Stop the adapter and clean up resources */
+  stop?(): Promise<void>;
 }
 
 export interface EventsConfig {
   adapter?: EventAdapter;
   maxHistorySize?: number;
+  /** SSE service for auto-propagating distributed events to SSE clients */
+  sse?: import("./sse").SSE;
 }
 
 /**
@@ -41,11 +54,11 @@ export interface Events {
   /**
    * Emit a typed event (when EventRegistry is augmented)
    */
-  emit<K extends keyof EventRegistry>(event: K, data: EventRegistry[K]): Promise<void>;
+  emit<K extends keyof EventRegistry>(event: K, data: EventRegistry[K], metadata?: EventMetadata): Promise<void>;
   /**
    * Emit an untyped event (fallback for dynamic event names)
    */
-  emit<T = any>(event: string, data: T): Promise<void>;
+  emit<T = any>(event: string, data: T, metadata?: EventMetadata): Promise<void>;
 
   /**
    * Subscribe to a typed event (when EventRegistry is augmented)
@@ -67,6 +80,8 @@ export interface Events {
 
   off(event: string, handler?: EventHandler): void;
   getHistory(event: string, limit?: number): Promise<EventRecord[]>;
+  /** Stop the event bus and clean up resources */
+  stop(): Promise<void>;
 }
 
 // In-memory event adapter with history
@@ -78,11 +93,12 @@ export class MemoryEventAdapter implements EventAdapter {
     this.maxHistorySize = maxHistorySize;
   }
 
-  async publish(event: string, data: any): Promise<void> {
+  async publish(event: string, data: any, metadata?: EventMetadata): Promise<void> {
     const record: EventRecord = {
       event,
       data,
       timestamp: new Date(),
+      metadata,
     };
 
     this.history.push(record);
@@ -103,16 +119,41 @@ export class MemoryEventAdapter implements EventAdapter {
 class EventsImpl implements Events {
   private handlers = new Map<string, Set<EventHandler>>();
   private adapter: EventAdapter;
+  private sse?: import("./sse").SSE;
+  private stopped = false;
 
   constructor(config: EventsConfig = {}) {
     this.adapter = config.adapter ?? new MemoryEventAdapter(config.maxHistorySize);
+    this.sse = config.sse;
+
+    // If adapter supports distributed subscriptions, set up the callback
+    if (this.adapter.subscribe) {
+      this.adapter.subscribe((event, data, metadata) => {
+        // Dispatch to local handlers without re-publishing to adapter
+        this.dispatchToLocalHandlers(event, data, metadata);
+        // Propagate to SSE clients so browser subscribers see distributed events
+        this.sse?.broadcastAll(event, data);
+      });
+    }
   }
 
-  async emit<T = any>(event: string, data: T): Promise<void> {
-    // Store in adapter (for history/persistence)
-    await this.adapter.publish(event, data);
+  async emit<T = any>(event: string, data: T, metadata?: EventMetadata): Promise<void> {
+    if (this.stopped) return;
 
-    // Notify handlers
+    // Store in adapter (for history/persistence)
+    await this.adapter.publish(event, data, metadata);
+
+    // Dispatch to local handlers
+    await this.dispatchToLocalHandlers(event, data, metadata);
+  }
+
+  /**
+   * Dispatch an event to locally registered handlers.
+   * Separated from emit() so distributed adapters can deliver remote events
+   * without re-publishing to the adapter.
+   */
+  private async dispatchToLocalHandlers(event: string, data: any, _metadata?: EventMetadata): Promise<void> {
+    // Notify exact-match handlers
     const eventHandlers = this.handlers.get(event);
     if (eventHandlers) {
       const promises: Promise<void>[] = [];
@@ -183,6 +224,12 @@ class EventsImpl implements Events {
 
   async getHistory(event: string, limit?: number): Promise<EventRecord[]> {
     return this.adapter.getHistory(event, limit);
+  }
+
+  async stop(): Promise<void> {
+    this.stopped = true;
+    await this.adapter.stop?.();
+    this.handlers.clear();
   }
 
   private matchPattern(event: string, pattern: string): boolean {

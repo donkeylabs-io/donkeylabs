@@ -5,6 +5,14 @@ import { fileURLToPath } from "node:url";
 import { PluginManager, type CoreServices, type ConfiguredPlugin } from "./core";
 import { type IRouter, type RouteDefinition, type ServerContext, type HandlerRegistry } from "./router";
 import { Handlers } from "./handlers";
+import {
+  type VersioningConfig,
+  type DeprecationInfo,
+  type SemVer,
+  parseSemVer,
+  compareSemVer,
+  resolveVersion,
+} from "./versioning";
 import type { MiddlewareRuntime, MiddlewareDefinition } from "./middleware";
 import {
   createLogger,
@@ -45,6 +53,7 @@ import {
   type StorageConfig,
   type LogsConfig,
 } from "./core/index";
+import { createHealth, createDbHealthCheck, type HealthConfig } from "./core/health";
 import type { AdminConfig } from "./admin";
 import { zodSchemaToTs } from "./generator/zod-to-ts";
 
@@ -61,6 +70,15 @@ export interface TypeGenerationConfig {
   constructorBody?: string;
   /** Factory function code (optional, replaces default createApi) */
   factoryFunction?: string;
+}
+
+/** A route entry in the versioned route map */
+interface VersionedRouteEntry {
+  version: SemVer | undefined;
+  route: RouteDefinition<keyof HandlerRegistry>;
+  deprecated?: DeprecationInfo;
+  /** Source router version string (for response headers) */
+  versionRaw?: string;
 }
 
 export interface ServerConfig {
@@ -104,6 +122,12 @@ export interface ServerConfig {
   websocket?: WebSocketConfig;
   storage?: StorageConfig;
   logs?: LogsConfig;
+  /** API versioning configuration */
+  versioning?: VersioningConfig;
+  /** Health check configuration */
+  health?: HealthConfig;
+  /** Graceful shutdown configuration */
+  shutdown?: ShutdownConfig;
   /**
    * Admin dashboard configuration.
    * Automatically enabled in dev mode, disabled in production.
@@ -215,12 +239,23 @@ export function defineService<N extends string, T>(
   return { name, factory };
 }
 
+export interface ShutdownConfig {
+  /** Total timeout before force exit in ms (default: 30000) */
+  timeout?: number;
+  /** Time to wait for in-flight requests to complete in ms (default: 10000) */
+  drainTimeout?: number;
+  /** Whether to call process.exit(1) after timeout (default: true) */
+  forceExit?: boolean;
+}
+
 export class AppServer {
   private port: number;
   private maxPortAttempts: number;
   private manager: PluginManager;
   private routers: IRouter[] = [];
   private routeMap: Map<string, RouteDefinition<keyof HandlerRegistry>> = new Map();
+  private versionedRouteMap: Map<string, VersionedRouteEntry[]> = new Map();
+  private versioningConfig: VersioningConfig;
   private coreServices: CoreServices;
   private typeGenConfig?: TypeGenerationConfig;
 
@@ -238,6 +273,11 @@ export class AppServer {
   private watchdogStarted = false;
   private options: ServerConfig;
 
+  // HTTP server & request tracking
+  private server: ReturnType<typeof Bun.serve> | null = null;
+  private activeRequests = 0;
+  private draining = false;
+
   // Custom services registry
   private serviceFactories = new Map<string, ServiceFactory<any>>();
   private serviceRegistry: Record<string, any> = {};
@@ -251,6 +291,7 @@ export class AppServer {
     this.maxPortAttempts = options.maxPortAttempts ?? 5;
     this.workflowsResumeStrategy = options.workflowsResumeStrategy ?? options.workflows?.resumeStrategy;
     this.watchdogConfig = options.watchdog;
+    this.versioningConfig = options.versioning ?? {};
 
     // Determine if we should use legacy databases
     const useLegacy = options.useLegacyCoreDatabases ?? false;
@@ -258,8 +299,8 @@ export class AppServer {
     // Initialize core services
     // Order matters: events → logs → logger (with PersistentTransport) → cron/jobs (with logger)
     const cache = createCache(options.cache);
-    const events = createEvents(options.events);
     const sse = createSSE(options.sse);
+    const events = createEvents({ ...options.events, sse });
     const rateLimiter = createRateLimiter(options.rateLimiter);
     const errors = createErrors(options.errors);
 
@@ -341,6 +382,19 @@ export class AppServer {
     const websocket = createWebSocket(options.websocket);
     const storage = createStorage(options.storage);
 
+    // Health checks
+    const health = createHealth(options.health);
+    // Register built-in DB check unless explicitly disabled
+    if (options.health?.dbCheck !== false) {
+      health.register(createDbHealthCheck(options.db));
+    }
+    // Register any user-provided checks
+    if (options.health?.checks) {
+      for (const check of options.health.checks) {
+        health.register(check);
+      }
+    }
+
     this.coreServices = {
       db: options.db,
       config: options.config ?? {},
@@ -358,6 +412,7 @@ export class AppServer {
       websocket,
       storage,
       logs,
+      health,
     };
 
     // Resolve circular dependency: workflows needs core for step handlers
@@ -664,7 +719,105 @@ export class AppServer {
    * Check if a route name is registered.
    */
   hasRoute(routeName: string): boolean {
-    return this.routeMap.has(routeName);
+    return this.routeMap.has(routeName) || this.versionedRouteMap.has(routeName);
+  }
+
+  /**
+   * Resolve a route considering API versioning.
+   * Returns the route + version metadata, or null if not found.
+   */
+  private resolveVersionedRoute(
+    actionName: string,
+    requestedVersion?: string | null
+  ): { route: RouteDefinition<keyof HandlerRegistry>; resolvedVersion?: string; deprecated?: DeprecationInfo } | null {
+    const headerName = this.versioningConfig.headerName ?? "X-API-Version";
+    const defaultBehavior = this.versioningConfig.defaultBehavior ?? "latest";
+
+    // Fast path: no version header and we have an unversioned route
+    if (!requestedVersion) {
+      const unversioned = this.routeMap.get(actionName);
+      if (unversioned) {
+        return { route: unversioned };
+      }
+
+      // No unversioned route - check versioned routes
+      const entries = this.versionedRouteMap.get(actionName);
+      if (!entries || entries.length === 0) {
+        return null;
+      }
+
+      if (defaultBehavior === "error") {
+        return null; // Caller should return 400
+      }
+
+      // "latest" or "unversioned" (with no unversioned route available) → use highest version
+      const latest = entries[0]!; // Already sorted highest-first
+      return {
+        route: latest.route,
+        resolvedVersion: latest.versionRaw,
+        deprecated: latest.deprecated,
+      };
+    }
+
+    // Version header present - resolve from versioned routes
+    const entries = this.versionedRouteMap.get(actionName);
+    if (!entries || entries.length === 0) {
+      // Fall back to unversioned route
+      const unversioned = this.routeMap.get(actionName);
+      return unversioned ? { route: unversioned } : null;
+    }
+
+    const versions = entries
+      .filter((e): e is VersionedRouteEntry & { version: SemVer } => e.version != null)
+      .map((e) => e.version);
+
+    const resolved = resolveVersion(versions, requestedVersion);
+    if (!resolved) {
+      // No matching version - fall back to unversioned if available
+      const unversioned = this.routeMap.get(actionName);
+      return unversioned ? { route: unversioned } : null;
+    }
+
+    const entry = entries.find(
+      (e) =>
+        e.version &&
+        e.version.major === resolved.major &&
+        e.version.minor === resolved.minor &&
+        e.version.patch === resolved.patch
+    );
+
+    if (!entry) return null;
+
+    return {
+      route: entry.route,
+      resolvedVersion: entry.versionRaw,
+      deprecated: entry.deprecated,
+    };
+  }
+
+  /**
+   * Add version/deprecation headers to a response.
+   */
+  private addVersionHeaders(
+    response: Response,
+    resolvedVersion?: string,
+    deprecated?: DeprecationInfo
+  ): void {
+    if (resolvedVersion && (this.versioningConfig.echoVersion !== false)) {
+      response.headers.set(
+        this.versioningConfig.headerName ?? "X-API-Version",
+        resolvedVersion
+      );
+    }
+    if (deprecated) {
+      if (deprecated.sunsetDate) {
+        response.headers.set("Sunset", deprecated.sunsetDate);
+      }
+      response.headers.set("Deprecation", "true");
+      if (deprecated.message) {
+        response.headers.set("X-Deprecation-Notice", deprecated.message);
+      }
+    }
   }
 
   /**
@@ -687,12 +840,17 @@ export class AppServer {
     const routes = [];
 
     for (const router of this.routers) {
+      const routerVersion = router.getVersion();
+      const routerDeprecation = router.getDeprecation();
+
       for (const route of router.getRoutes()) {
         routes.push({
           name: route.name,
           handler: route.handler || "typed",
           inputType: route.input ? zodSchemaToTs(route.input) : undefined,
           outputType: route.output ? zodSchemaToTs(route.output) : undefined,
+          version: routerVersion,
+          deprecated: routerDeprecation ? true : undefined,
         });
       }
     }
@@ -724,11 +882,14 @@ export class AppServer {
       inputSource?: string;
       outputSource?: string;
       eventsSource?: Record<string, string>;
+      version?: string;
     }> = [];
 
     const routesWithoutOutput: string[] = [];
 
     for (const router of this.routers) {
+      const routerVersion = router.getVersion();
+
       for (const route of router.getRoutes()) {
         const parts = route.name.split(".");
         const routeName = parts[parts.length - 1] || route.name;
@@ -756,6 +917,7 @@ export class AppServer {
           inputSource: route.input ? zodSchemaToTs(route.input) : undefined,
           outputSource: route.output ? zodSchemaToTs(route.output) : undefined,
           eventsSource,
+          ...(routerVersion ? { version: routerVersion } : {}),
         });
       }
     }
@@ -794,6 +956,7 @@ export class AppServer {
       inputSource?: string;
       outputSource?: string;
       eventsSource?: Record<string, string>;
+      version?: string;
     }>
   ): string {
     const baseImport =
@@ -1087,14 +1250,45 @@ ${factoryFunction}
     logger.info("Background services started (cron, jobs, workflows, processes)");
 
     for (const router of this.routers) {
+      const routerVersion = router.getVersion();
+      const routerDeprecation = router.getDeprecation();
+      const parsedVersion = routerVersion ? parseSemVer(routerVersion) : undefined;
+
       for (const route of router.getRoutes()) {
-        if (this.routeMap.has(route.name)) {
-          logger.warn(`Duplicate route detected`, { route: route.name });
+        if (routerVersion) {
+          // Versioned route → add to versionedRouteMap
+          if (!this.versionedRouteMap.has(route.name)) {
+            this.versionedRouteMap.set(route.name, []);
+          }
+          this.versionedRouteMap.get(route.name)!.push({
+            version: parsedVersion ?? undefined,
+            route,
+            deprecated: routerDeprecation,
+            versionRaw: routerVersion,
+          });
+        } else {
+          // Unversioned route → add to routeMap (backward compat)
+          if (this.routeMap.has(route.name)) {
+            logger.warn(`Duplicate route detected`, { route: route.name });
+          }
+          this.routeMap.set(route.name, route);
         }
-        this.routeMap.set(route.name, route);
       }
     }
-    logger.info(`Loaded ${this.routeMap.size} RPC routes`);
+
+    // Sort versioned entries highest-first for efficient resolution
+    for (const entries of this.versionedRouteMap.values()) {
+      entries.sort((a, b) => {
+        if (!a.version && !b.version) return 0;
+        if (!a.version) return 1;
+        if (!b.version) return -1;
+        return compareSemVer(b.version, a.version);
+      });
+    }
+
+    const totalRoutes = this.routeMap.size +
+      [...this.versionedRouteMap.values()].reduce((sum, e) => sum + e.length, 0);
+    logger.info(`Loaded ${totalRoutes} RPC routes (${this.versionedRouteMap.size} versioned)`);
     logger.info("Server initialized (adapter mode)");
 
     // Initialize custom services, then run onReady handlers
@@ -1185,10 +1379,22 @@ ${factoryFunction}
     const { logger } = this.coreServices;
     const corsHeaders = options?.corsHeaders ?? {};
 
-    const route = this.routeMap.get(routeName);
-    if (!route) {
+    const headerName = this.versioningConfig.headerName ?? "X-API-Version";
+    const requestedVersion = req.headers.get(headerName);
+    const resolved = this.resolveVersionedRoute(routeName, requestedVersion);
+    if (!resolved) {
+      // If versioning is "error" mode and no version header was sent, return 400
+      if (requestedVersion === null && this.versionedRouteMap.has(routeName) &&
+          this.versioningConfig.defaultBehavior === "error") {
+        return Response.json(
+          { error: "VERSION_REQUIRED", message: `${headerName} header is required` },
+          { status: 400, headers: corsHeaders }
+        );
+      }
       return null;
     }
+
+    const { route, resolvedVersion, deprecated } = resolved;
 
     const type = route.handler || "typed";
 
@@ -1214,6 +1420,10 @@ ${factoryFunction}
     }
 
     // Build context
+    const requestId = crypto.randomUUID();
+    const traceId = req.headers.get("x-request-id")
+      ?? req.headers.get("x-trace-id")
+      ?? requestId;
     const ctx: ServerContext = {
       db: this.coreServices.db,
       plugins: this.manager.getServices(),
@@ -1222,7 +1432,8 @@ ${factoryFunction}
       config: this.coreServices.config,
       services: this.serviceRegistry,
       ip,
-      requestId: crypto.randomUUID(),
+      requestId,
+      traceId,
       signal: req.signal,
     };
 
@@ -1246,11 +1457,18 @@ ${factoryFunction}
     };
 
     try {
+      let response: Response;
       if (middlewareStack.length > 0) {
-        return await this.executeMiddlewareChain(req, ctx, middlewareStack, finalHandler);
+        response = await this.executeMiddlewareChain(req, ctx, middlewareStack, finalHandler);
       } else {
-        return await finalHandler();
+        response = await finalHandler();
       }
+      // Add trace headers
+      response.headers.set("X-Request-Id", ctx.requestId);
+      response.headers.set("X-Trace-Id", ctx.traceId);
+      // Add version headers
+      this.addVersionHeaders(response, resolvedVersion, deprecated);
+      return response;
     } catch (error) {
       if (error instanceof HttpError) {
         logger.warn("HTTP error thrown", {
@@ -1261,7 +1479,11 @@ ${factoryFunction}
         });
         return Response.json(error.toJSON(), {
           status: error.status,
-          headers: corsHeaders,
+          headers: {
+            ...corsHeaders,
+            "X-Request-Id": ctx.requestId,
+            "X-Trace-Id": ctx.traceId,
+          },
         });
       }
       throw error;
@@ -1280,16 +1502,19 @@ ${factoryFunction}
   async callRoute<TOutput = any>(
     routeName: string,
     input: any,
-    ip: string = "127.0.0.1"
+    ip: string = "127.0.0.1",
+    options?: { version?: string }
   ): Promise<TOutput> {
     const { logger } = this.coreServices;
 
-    const route = this.routeMap.get(routeName);
-    if (!route) {
+    const resolved = this.resolveVersionedRoute(routeName, options?.version);
+    if (!resolved) {
       throw new Error(`Route "${routeName}" not found`);
     }
+    const { route } = resolved;
 
     // Build context
+    const requestId = crypto.randomUUID();
     const ctx: ServerContext = {
       db: this.coreServices.db,
       plugins: this.manager.getServices(),
@@ -1298,7 +1523,8 @@ ${factoryFunction}
       config: this.coreServices.config,
       services: this.serviceRegistry,
       ip,
-      requestId: crypto.randomUUID(),
+      requestId,
+      traceId: requestId,
     };
 
     // Validate input if schema exists
@@ -1389,99 +1615,164 @@ ${factoryFunction}
     const { logger } = this.coreServices;
 
     // 5. Start HTTP server with port retry logic
-    const fetchHandler = async (req: Request, server: ReturnType<typeof Bun.serve>) => {
+    const fetchHandler = async (req: Request, bunServer: ReturnType<typeof Bun.serve>) => {
       const url = new URL(req.url);
 
-      // Extract client IP
-      const ip = extractClientIP(req, server.requestIP(req)?.address);
+      // Health endpoints bypass draining (load balancers need to see 503)
+      const livenessPath = this.options.health?.livenessPath ?? "/_health";
+      const readinessPath = this.options.health?.readinessPath ?? "/_ready";
 
-      // Handle SSE endpoint
-      if (url.pathname === "/sse" && req.method === "GET") {
-        return this.handleSSE(req, ip);
+      if (url.pathname === livenessPath && req.method === "GET") {
+        const result = this.coreServices.health.liveness(this.isShuttingDown);
+        return Response.json(result, {
+          status: result.status === "healthy" ? 200 : 503,
+        });
       }
 
-      // Extract action from URL path (e.g., "auth.login")
-      const actionName = url.pathname.slice(1);
+      if (url.pathname === readinessPath && req.method === "GET") {
+        const result = await this.coreServices.health.check();
+        return Response.json(result, {
+          status: result.status === "unhealthy" ? 503 : 200,
+        });
+      }
 
-      const route = this.routeMap.get(actionName);
-      if (route) {
-        const handlerType = route.handler || "typed";
+      // Reject new requests during drain phase
+      if (this.draining) {
+        return new Response("Service Unavailable", {
+          status: 503,
+          headers: { "Retry-After": "5", "Connection": "close" },
+        });
+      }
 
-        // Handlers that accept GET requests (for browser compatibility)
-        const getEnabledHandlers = ["stream", "sse", "html", "raw"];
+      this.activeRequests++;
+      try {
+        // Extract client IP
+        const ip = extractClientIP(req, bunServer.requestIP(req)?.address);
 
-        // Check method based on handler type
-        if (req.method === "GET" && !getEnabledHandlers.includes(handlerType as string)) {
-          return new Response("Method Not Allowed", { status: 405 });
+        // Handle SSE endpoint
+        if (url.pathname === "/sse" && req.method === "GET") {
+          return this.handleSSE(req, ip);
         }
-        if (req.method !== "GET" && req.method !== "POST") {
-          return new Response("Method Not Allowed", { status: 405 });
+
+        // Extract action from URL path (e.g., "auth.login")
+        const actionName = url.pathname.slice(1);
+
+        const versionHeaderName = this.versioningConfig.headerName ?? "X-API-Version";
+        const requestedApiVersion = req.headers.get(versionHeaderName);
+
+        // Handle versioning "error" mode
+        if (requestedApiVersion === null && this.versionedRouteMap.has(actionName) &&
+            !this.routeMap.has(actionName) &&
+            this.versioningConfig.defaultBehavior === "error") {
+          return Response.json(
+            { error: "VERSION_REQUIRED", message: `${versionHeaderName} header is required` },
+            { status: 400 }
+          );
         }
-        const type = route.handler || "typed";
 
-        // First check core handlers
-        let handler = Handlers[type as keyof typeof Handlers];
+        const resolvedRoute = this.resolveVersionedRoute(actionName, requestedApiVersion);
+        const route = resolvedRoute?.route;
+        const resolvedVersion = resolvedRoute?.resolvedVersion;
+        const routeDeprecation = resolvedRoute?.deprecated;
+        if (route) {
+          const handlerType = route.handler || "typed";
 
-        // If not found, check plugin handlers
-        if (!handler) {
-          for (const config of this.manager.getPlugins()) {
-            if (config.handlers && config.handlers[type]) {
-              handler = config.handlers[type] as any;
-              break;
+          // Handlers that accept GET requests (for browser compatibility)
+          const getEnabledHandlers = ["stream", "sse", "html", "raw"];
+
+          // Check method based on handler type
+          if (req.method === "GET" && !getEnabledHandlers.includes(handlerType as string)) {
+            return new Response("Method Not Allowed", { status: 405 });
+          }
+          if (req.method !== "GET" && req.method !== "POST") {
+            return new Response("Method Not Allowed", { status: 405 });
+          }
+          const type = route.handler || "typed";
+
+          // First check core handlers
+          let handler = Handlers[type as keyof typeof Handlers];
+
+          // If not found, check plugin handlers
+          if (!handler) {
+            for (const config of this.manager.getPlugins()) {
+              if (config.handlers && config.handlers[type]) {
+                handler = config.handlers[type] as any;
+                break;
+              }
             }
+          }
+
+          if (handler) {
+            // Build context with core services and IP
+            const requestId = crypto.randomUUID();
+            const traceId = req.headers.get("x-request-id")
+              ?? req.headers.get("x-trace-id")
+              ?? requestId;
+            const ctx: ServerContext = {
+              db: this.coreServices.db,
+              plugins: this.manager.getServices(),
+              core: this.coreServices,
+              errors: this.coreServices.errors, // Convenience access
+              config: this.coreServices.config,
+              services: this.serviceRegistry,
+              ip,
+              requestId,
+              traceId,
+              signal: req.signal,
+            };
+
+            // Get middleware stack for this route
+            const middlewareStack = route.middleware || [];
+
+            // Final handler execution
+            const finalHandler = async () => {
+              return await handler.execute(req, route, route.handle as any, ctx);
+            };
+
+            // Execute middleware chain, then handler - with HttpError handling
+            try {
+              let response: Response;
+              if (middlewareStack.length > 0) {
+                response = await this.executeMiddlewareChain(req, ctx, middlewareStack, finalHandler);
+              } else {
+                response = await finalHandler();
+              }
+              // Add trace headers to response
+              response.headers.set("X-Request-Id", ctx.requestId);
+              response.headers.set("X-Trace-Id", ctx.traceId);
+              // Add version headers
+              this.addVersionHeaders(response, resolvedVersion, routeDeprecation);
+              return response;
+            } catch (error) {
+              // Handle HttpError (thrown via ctx.errors.*)
+              if (error instanceof HttpError) {
+                logger.warn("HTTP error thrown", {
+                  route: actionName,
+                  status: error.status,
+                  code: error.code,
+                  message: error.message,
+                });
+                return Response.json(error.toJSON(), {
+                  status: error.status,
+                  headers: {
+                    "X-Request-Id": ctx.requestId,
+                    "X-Trace-Id": ctx.traceId,
+                  },
+                });
+              }
+              // Re-throw unknown errors
+              throw error;
+            }
+          } else {
+            logger.error("Handler not found", { handler: type, route: actionName });
+            return new Response("Handler Not Found", { status: 500 });
           }
         }
 
-        if (handler) {
-          // Build context with core services and IP
-          const ctx: ServerContext = {
-            db: this.coreServices.db,
-            plugins: this.manager.getServices(),
-            core: this.coreServices,
-            errors: this.coreServices.errors, // Convenience access
-            config: this.coreServices.config,
-            services: this.serviceRegistry,
-            ip,
-            requestId: crypto.randomUUID(),
-            signal: req.signal,
-          };
-
-          // Get middleware stack for this route
-          const middlewareStack = route.middleware || [];
-
-          // Final handler execution
-          const finalHandler = async () => {
-            return await handler.execute(req, route, route.handle as any, ctx);
-          };
-
-          // Execute middleware chain, then handler - with HttpError handling
-          try {
-            if (middlewareStack.length > 0) {
-              return await this.executeMiddlewareChain(req, ctx, middlewareStack, finalHandler);
-            } else {
-              return await finalHandler();
-            }
-          } catch (error) {
-            // Handle HttpError (thrown via ctx.errors.*)
-            if (error instanceof HttpError) {
-              logger.warn("HTTP error thrown", {
-                route: actionName,
-                status: error.status,
-                code: error.code,
-                message: error.message,
-              });
-              return Response.json(error.toJSON(), { status: error.status });
-            }
-            // Re-throw unknown errors
-            throw error;
-          }
-        } else {
-          logger.error("Handler not found", { handler: type, route: actionName });
-          return new Response("Handler Not Found", { status: 500 });
-        }
+        return new Response("Not Found", { status: 404 });
+      } finally {
+        this.activeRequests--;
       }
-
-      return new Response("Not Found", { status: 404 });
     };
 
     // Try to start server, retrying with different ports if port is in use
@@ -1490,7 +1781,7 @@ ${factoryFunction}
 
     for (let attempt = 0; attempt < this.maxPortAttempts; attempt++) {
       try {
-        Bun.serve({
+        this.server = Bun.serve({
           port: currentPort,
           fetch: fetchHandler,
           idleTimeout: 255, // Max value (255 seconds) for SSE/long-lived connections
@@ -1553,8 +1844,15 @@ ${factoryFunction}
   }
 
   /**
-   * Gracefully shutdown the server.
-   * Runs shutdown handlers, stops background services, and closes connections.
+   * Gracefully shutdown the server in phases.
+   * 1. Stop accepting new requests (draining)
+   * 2. Wait for in-flight requests to complete
+   * 3. Run user shutdown handlers (LIFO)
+   * 4. Stop real-time services (SSE, WebSocket)
+   * 5. Stop background services (events, processes, workflows, jobs, cron)
+   * 6. Stop auxiliary services (logs, audit, storage)
+   * 7. Close database
+   *
    * Safe to call multiple times (idempotent).
    */
   async shutdown(): Promise<void> {
@@ -1562,34 +1860,77 @@ ${factoryFunction}
     this.isShuttingDown = true;
 
     const { logger } = this.coreServices;
+    const shutdownConfig = this.options.shutdown ?? {};
+    const totalTimeout = shutdownConfig.timeout ?? 30000;
+    const drainTimeout = shutdownConfig.drainTimeout ?? 10000;
+    const forceExit = shutdownConfig.forceExit !== false;
+
     logger.info("Shutting down server...");
 
-    // Run user shutdown handlers first (in reverse order - LIFO)
-    await this.runShutdownHandlers();
+    // Force exit timer - .unref() so it doesn't keep process alive
+    let forceExitTimer: ReturnType<typeof setTimeout> | undefined;
+    if (forceExit) {
+      forceExitTimer = setTimeout(() => {
+        logger.error("Shutdown timed out, forcing exit");
+        process.exit(1);
+      }, totalTimeout);
+      forceExitTimer.unref();
+    }
 
-    // Flush and stop logs before other services shut down
-    await this.coreServices.logs.flush();
-    this.coreServices.logs.stop();
+    try {
+      // Phase 1: Stop accepting new requests
+      this.draining = true;
+      this.server?.stop();
+      logger.info("Phase 1: Stopped accepting new requests");
 
-    // Stop SSE (closes all client connections)
-    this.coreServices.sse.shutdown();
+      // Phase 2: Drain in-flight requests
+      if (this.activeRequests > 0) {
+        logger.info(`Phase 2: Draining ${this.activeRequests} in-flight request(s)...`);
+        const drainStart = Date.now();
+        while (this.activeRequests > 0 && Date.now() - drainStart < drainTimeout) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        if (this.activeRequests > 0) {
+          logger.warn(`Drain timeout reached with ${this.activeRequests} request(s) still active`);
+        } else {
+          logger.info("Phase 2: All requests drained");
+        }
+      }
 
-    // Stop WebSocket connections
-    this.coreServices.websocket.shutdown();
+      // Phase 3: Run user shutdown handlers (LIFO)
+      await this.runShutdownHandlers();
+      logger.info("Phase 3: User shutdown handlers complete");
 
-    // Stop background services
-    await this.coreServices.processes.shutdown();
-    await this.coreServices.workflows.stop();
-    await this.coreServices.jobs.stop();
-    await this.coreServices.cron.stop();
+      // Phase 4: Stop real-time services
+      this.coreServices.sse.shutdown();
+      this.coreServices.websocket.shutdown();
+      logger.info("Phase 4: Real-time services stopped");
 
-    // Stop audit service (cleanup timers)
-    this.coreServices.audit.stop();
+      // Phase 5: Stop background services
+      await this.coreServices.events.stop();
+      await this.coreServices.processes.shutdown();
+      await this.coreServices.workflows.stop();
+      await this.coreServices.jobs.stop();
+      await this.coreServices.cron.stop();
+      logger.info("Phase 5: Background services stopped");
 
-    // Stop storage (cleanup connections)
-    this.coreServices.storage.stop();
+      // Phase 6: Stop auxiliary services
+      await this.coreServices.logs.flush();
+      this.coreServices.logs.stop();
+      this.coreServices.audit.stop();
+      this.coreServices.storage.stop();
+      logger.info("Phase 6: Auxiliary services stopped");
 
-    logger.info("Server shutdown complete");
+      // Phase 7: Close database
+      await this.coreServices.db.destroy();
+      logger.info("Phase 7: Database closed");
+
+      logger.info("Server shutdown complete");
+    } finally {
+      if (forceExitTimer) {
+        clearTimeout(forceExitTimer);
+      }
+    }
   }
 
   /**

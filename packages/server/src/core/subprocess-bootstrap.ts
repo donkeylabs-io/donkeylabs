@@ -20,6 +20,7 @@ import {
   KyselyWorkflowAdapter,
   MemoryAuditAdapter,
   MemoryLogsAdapter,
+  createHealth,
 } from "./index";
 import { PluginManager, type CoreServices, type ConfiguredPlugin } from "../core";
 
@@ -96,6 +97,7 @@ export async function bootstrapSubprocess(
   const audit = createAudit({ adapter: auditAdapter });
   const websocket = createWebSocket();
   const storage = createStorage();
+  const health = createHealth({ dbCheck: false });
 
   const core: CoreServices = {
     db,
@@ -114,6 +116,7 @@ export async function bootstrapSubprocess(
     websocket,
     storage,
     logs,
+    health,
   };
 
   workflows.setCore(core);

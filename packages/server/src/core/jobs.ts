@@ -56,6 +56,8 @@ export interface Job {
   lastHeartbeat?: Date;
   /** Current process state */
   processState?: ExternalJobProcessState;
+  /** Trace ID for distributed tracing */
+  traceId?: string;
 }
 
 export interface JobHandler<T = any, R = any> {
@@ -66,6 +68,8 @@ export interface JobHandlerContext {
   logger?: Logger;
   emit?: (event: string, data?: Record<string, any>) => Promise<void>;
   log?: (level: LogLevel, message: string, data?: Record<string, any>) => void;
+  /** Trace ID for distributed tracing */
+  traceId?: string;
 }
 
 /** Options for listing all jobs */
@@ -128,9 +132,9 @@ export interface Jobs {
   /** Register an external job (Python, Go, Shell, etc.) */
   registerExternal(name: string, config: ExternalJobConfig): void;
   /** Enqueue a job (works for both in-process and external jobs) */
-  enqueue<T = any>(name: string, data: T, options?: { maxAttempts?: number }): Promise<string>;
+  enqueue<T = any>(name: string, data: T, options?: { maxAttempts?: number; traceId?: string }): Promise<string>;
   /** Schedule a job to run at a specific time */
-  schedule<T = any>(name: string, data: T, runAt: Date, options?: { maxAttempts?: number }): Promise<string>;
+  schedule<T = any>(name: string, data: T, runAt: Date, options?: { maxAttempts?: number; traceId?: string }): Promise<string>;
   /** Get a job by ID */
   get(jobId: string): Promise<Job | null>;
   /** Cancel a pending job */
@@ -339,7 +343,7 @@ class JobsImpl implements Jobs {
     return this.externalConfigs.has(name);
   }
 
-  async enqueue<T = any>(name: string, data: T, options: { maxAttempts?: number } = {}): Promise<string> {
+  async enqueue<T = any>(name: string, data: T, options: { maxAttempts?: number; traceId?: string } = {}): Promise<string> {
     const isExternal = this.isExternalJob(name);
 
     if (!isExternal && !this.handlers.has(name)) {
@@ -355,6 +359,7 @@ class JobsImpl implements Jobs {
       maxAttempts: options.maxAttempts ?? this.defaultMaxAttempts,
       external: isExternal || undefined,
       processState: isExternal ? "spawning" : undefined,
+      traceId: options.traceId,
     });
 
     return job.id;
@@ -364,7 +369,7 @@ class JobsImpl implements Jobs {
     name: string,
     data: T,
     runAt: Date,
-    options: { maxAttempts?: number } = {}
+    options: { maxAttempts?: number; traceId?: string } = {}
   ): Promise<string> {
     const isExternal = this.isExternalJob(name);
 
@@ -382,6 +387,7 @@ class JobsImpl implements Jobs {
       maxAttempts: options.maxAttempts ?? this.defaultMaxAttempts,
       external: isExternal || undefined,
       processState: isExternal ? "spawning" : undefined,
+      traceId: options.traceId,
     });
 
     return job.id;
@@ -1147,6 +1153,7 @@ class JobsImpl implements Jobs {
         logger: scopedLogger,
         emit,
         log,
+        traceId: job.traceId,
       });
 
       await this.adapter.update(job.id, {

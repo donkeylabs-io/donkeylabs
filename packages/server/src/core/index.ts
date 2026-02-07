@@ -21,6 +21,7 @@ export {
 export {
   type Events,
   type EventHandler,
+  type EventMetadata,
   type Subscription,
   type EventRecord,
   type EventAdapter,
@@ -302,3 +303,14 @@ export {
   PersistentTransport,
   type PersistentTransportConfig,
 } from "./logs-transport";
+
+export {
+  type Health,
+  type HealthCheck,
+  type HealthCheckResult,
+  type HealthConfig,
+  type HealthResponse,
+  type HealthStatus,
+  createHealth,
+  createDbHealthCheck,
+} from "./health";

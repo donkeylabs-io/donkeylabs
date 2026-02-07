@@ -1,0 +1,48 @@
+{
+  "name": "@donkeylabs/adapter-swift",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Swift adapter for @donkeylabs/server - generates a typed Swift Package (SPM) client",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./generator": {
+      "types": "./dist/generator/index.d.ts",
+      "import": "./dist/generator/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && cp -r src/runtime dist/runtime",
+    "prepublishOnly": "npm run build",
+    "typecheck": "bun --bun tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@donkeylabs/server": "^2.0.6"
+  },
+  "keywords": [
+    "swift",
+    "ios",
+    "macos",
+    "adapter",
+    "api",
+    "rpc",
+    "codegen",
+    "spm",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/donkeylabs-io/donkeylabs",
+    "directory": "packages/adapter-swift"
+  },
+  "license": "MIT"
+}

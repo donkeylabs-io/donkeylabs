@@ -17,6 +17,7 @@ import {
   createWebSocket,
   createStorage,
   createLogs,
+  createHealth,
   KyselyJobAdapter,
   KyselyWorkflowAdapter,
   MemoryAuditAdapter,
@@ -71,6 +72,7 @@ export async function createTestHarness(targetPlugin: Plugin, dependencies: Plug
   const websocket = createWebSocket();
   const storage = createStorage(); // Uses memory adapter by default
   const logs = createLogs({ adapter: new MemoryLogsAdapter(), events });
+  const health = createHealth({ dbCheck: false }); // No DB check in unit tests
 
   const core: CoreServices = {
     db,
@@ -89,6 +91,7 @@ export async function createTestHarness(targetPlugin: Plugin, dependencies: Plug
     websocket,
     storage,
     logs,
+    health,
   };
 
   const manager = new PluginManager(core);
@@ -158,28 +161,37 @@ export class TestApiClient extends ApiClientBase {
    * const user = await client.call("users.create", { name: "Test", email: "test@example.com" });
    * ```
    */
-  async call<TOutput = any>(route: string, input: any = {}): Promise<TOutput> {
+  async call<TOutput = any>(
+    route: string,
+    input: any = {},
+    options?: { version?: string }
+  ): Promise<TOutput> {
     const routeDef = this.routeMap.get(route);
     if (!routeDef) {
       throw new Error(`Route not found: ${route}. Available routes: ${[...this.routeMap.keys()].join(", ")}`);
     }
 
+    const versionHeaders: Record<string, string> = {};
+    if (options?.version) {
+      versionHeaders["X-API-Version"] = options.version;
+    }
+
     // Handle different handler types
     if (routeDef.handler === "typed" || routeDef.handler === "formData") {
-      return this.request(route, input);
+      return this.request(route, input, { headers: versionHeaders });
     } else if (routeDef.handler === "stream" || routeDef.handler === "html") {
       const response = await this.rawRequest(route, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...versionHeaders },
         body: JSON.stringify(input),
       });
       return response as any;
     } else if (routeDef.handler === "raw") {
-      const response = await this.rawRequest(route);
+      const response = await this.rawRequest(route, { headers: versionHeaders });
       return response as any;
     }
 
-    return this.request(route, input);
+    return this.request(route, input, { headers: versionHeaders });
   }
 
   /**

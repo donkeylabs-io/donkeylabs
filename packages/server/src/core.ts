@@ -17,6 +17,7 @@ import type { Audit } from "./core/audit";
 import type { WebSocketService } from "./core/websocket";
 import type { Storage } from "./core/storage";
 import type { Logs } from "./core/logs";
+import type { Health } from "./core/health";
 
 // ============================================
 // Auto-detect caller module for plugin define()
@@ -137,6 +138,7 @@ export interface CoreServices {
   websocket: WebSocketService;
   storage: Storage;
   logs: Logs;
+  health: Health;
 }
 
 /**
@@ -182,6 +184,8 @@ export interface GlobalContext {
   ip: string;
   /** Unique request ID */
   requestId: string;
+  /** Trace ID for distributed tracing (from X-Request-Id/X-Trace-Id header, or defaults to requestId) */
+  traceId: string;
   /** Authenticated user (set by auth middleware) */
   user?: any;
   /**
@@ -431,7 +435,11 @@ export type InferService<T> = UnwrapPluginFactory<T> extends { _service: infer S
   : never;
 export type InferSchema<T> = UnwrapPluginFactory<T> extends { _schema: infer S } ? S : never;
 export type InferHandlers<T> = UnwrapPluginFactory<T> extends { handlers?: infer H } ? H : {};
-export type InferMiddleware<T> = UnwrapPluginFactory<T> extends { middleware?: (ctx: any) => infer M } ? M : {};
+export type InferMiddleware<T> = UnwrapPluginFactory<T> extends {
+  middleware?: (ctx: any, service: any) => infer M;
+}
+  ? M
+  : {};
 export type InferDependencies<T> = UnwrapPluginFactory<T> extends { _dependencies: infer D } ? D : readonly [];
 export type InferConfig<T> = T extends (config: infer C) => any ? C : void;
 export type InferEvents<T> = UnwrapPluginFactory<T> extends { events?: infer E } ? E : {};

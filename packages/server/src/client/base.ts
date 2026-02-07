@@ -154,6 +154,8 @@ export interface ApiClientOptions {
   onAuthChange?: (authenticated: boolean) => void;
   /** Custom fetch implementation (for testing or Node.js polyfills) */
   fetch?: typeof fetch;
+  /** API version to send via X-API-Version header */
+  apiVersion?: string;
 }
 
 // ============================================
@@ -225,6 +227,18 @@ export class ApiClientBase<TEvents extends Record<string, any> = Record<string, 
   /**
    * Make a typed POST request to a route
    */
+  /** Build common headers including optional API version */
+  private buildHeaders(extra?: Record<string, string>): Record<string, string> {
+    const headers: Record<string, string> = {
+      ...this.options.headers,
+      ...extra,
+    };
+    if (this.options.apiVersion) {
+      headers["X-API-Version"] = this.options.apiVersion;
+    }
+    return headers;
+  }
+
   protected async request<TInput, TOutput>(
     route: string,
     input: TInput,
@@ -236,8 +250,7 @@ export class ApiClientBase<TEvents extends Record<string, any> = Record<string, 
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...this.options.headers,
-        ...options.headers,
+        ...this.buildHeaders(options.headers),
       },
       credentials: this.options.credentials,
       body: JSON.stringify(input),
@@ -278,7 +291,7 @@ export class ApiClientBase<TEvents extends Record<string, any> = Record<string, 
       method: "POST",
       ...requestInit,
       headers: {
-        ...this.options.headers,
+        ...this.buildHeaders(),
         ...requestInit.headers,
       },
       credentials: this.options.credentials,
@@ -298,7 +311,7 @@ export class ApiClientBase<TEvents extends Record<string, any> = Record<string, 
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...this.options.headers,
+        ...this.buildHeaders(),
       },
       credentials: this.options.credentials,
       body: JSON.stringify(input),
@@ -331,7 +344,7 @@ export class ApiClientBase<TEvents extends Record<string, any> = Record<string, 
     const response = await fetchFn(`${this.baseUrl}/${route}`, {
       method: "POST",
       headers: {
-        ...this.options.headers,
+        ...this.buildHeaders(),
         // Don't set Content-Type - browser will set it with boundary
       },
       credentials: this.options.credentials,

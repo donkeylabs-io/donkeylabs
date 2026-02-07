@@ -2,6 +2,7 @@
 import { z } from "zod";
 import type { GlobalContext, PluginHandlerRegistry } from "./core";
 import type { MiddlewareDefinition } from "./middleware";
+import type { RouterOptions, DeprecationInfo } from "./versioning";
 
 export type ServerContext = GlobalContext;
 
@@ -255,6 +256,8 @@ export interface IRouter {
   getRoutes(): RouteDefinition<any, any, any>[];
   getMetadata(): RouteMetadata[];
   getPrefix(): string;
+  getVersion(): string | undefined;
+  getDeprecation(): DeprecationInfo | undefined;
 }
 
 export class Router implements IRouter {
@@ -262,9 +265,13 @@ export class Router implements IRouter {
   private childRouters: IRouter[] = [];
   private prefix: string;
   private _middlewareStack: MiddlewareDefinition[] = [];
+  private _version?: string;
+  private _deprecated?: DeprecationInfo;
 
-  constructor(prefix: string = "") {
+  constructor(prefix: string = "", options?: RouterOptions) {
     this.prefix = prefix;
+    this._version = options?.version;
+    this._deprecated = options?.deprecated;
   }
 
   route(name: string): IRouteBuilder<this> {
@@ -277,6 +284,11 @@ export class Router implements IRouter {
       const fullPrefix = this.prefix ? `${this.prefix}.${prefixOrRouter}` : prefixOrRouter;
       const childRouter = new Router(fullPrefix);
       childRouter._middlewareStack = [...this._middlewareStack];
+      // Inherit parent version unless child overrides
+      if (this._version && !childRouter._version) {
+        childRouter._version = this._version;
+        childRouter._deprecated = this._deprecated;
+      }
       // Track child router so its routes are included in getRoutes()
       this.childRouters.push(childRouter);
       return childRouter;
@@ -355,6 +367,14 @@ export class Router implements IRouter {
   getPrefix(): string {
     return this.prefix;
   }
+
+  getVersion(): string | undefined {
+    return this._version;
+  }
+
+  getDeprecation(): DeprecationInfo | undefined {
+    return this._deprecated;
+  }
 }
 
 /** Creates a Proxy that intercepts middleware method calls and adds them to the router's middleware stack */
@@ -372,7 +392,7 @@ function createMiddlewareBuilderProxy<TRouter extends Router>(router: TRouter): 
   });
 }
 
-export const createRouter = (prefix?: string): IRouter => new Router(prefix);
+export const createRouter = (prefix?: string, options?: RouterOptions): IRouter => new Router(prefix, options);
 
 /**
  * Define a route with type inference for input/output schemas.

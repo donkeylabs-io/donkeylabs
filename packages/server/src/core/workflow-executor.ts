@@ -226,6 +226,7 @@ function createIpcEventBridge(socket: Socket, instanceId: string): StateMachineE
         type: "progress",
         instanceId: id,
         timestamp: Date.now(),
+        stepName: currentStep,
         progress,
         completedSteps: completed,
         totalSteps: total,

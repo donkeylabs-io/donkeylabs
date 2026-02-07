@@ -19,6 +19,10 @@ export interface RouteInfo {
   outputSource?: string;
   /** SSE event schemas (for sse handler) */
   eventsSource?: Record<string, string>;
+  /** API version (semver) if from a versioned router */
+  version?: string;
+  /** Whether this route version is deprecated */
+  deprecated?: boolean;
 }
 
 export interface EventInfo {
