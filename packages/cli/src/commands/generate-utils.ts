@@ -36,15 +36,26 @@ export interface RouteInfo {
   eventsSource?: Record<string, string>;
 }
 
+export interface ProcessInfo {
+  name: string;
+  events?: Record<string, string>;
+  commands?: Record<string, string>;
+}
+
+export interface ServerOutput {
+  routes: RouteInfo[];
+  processes: ProcessInfo[];
+}
+
 /**
  * Run the server entry file with DONKEYLABS_GENERATE=1 to get typed route metadata
  */
-export async function extractRoutesFromServer(entryPath: string): Promise<RouteInfo[]> {
+export async function extractRoutesFromServer(entryPath: string): Promise<ServerOutput> {
   const fullPath = join(process.cwd(), entryPath);
 
   if (!existsSync(fullPath)) {
     console.warn(pc.yellow(`Entry file not found: ${entryPath}`));
-    return [];
+    return { routes: [], processes: [] };
   }
 
   const TIMEOUT_MS = 10000; // 10 second timeout
@@ -66,7 +77,7 @@ export async function extractRoutesFromServer(entryPath: string): Promise<RouteI
       child.kill("SIGTERM");
       console.warn(pc.yellow(`Route extraction timed out after ${TIMEOUT_MS / 1000}s`));
       console.warn(pc.dim("Make sure routes are registered with server.use() before any blocking operations"));
-      resolve([]);
+      resolve({ routes: [], processes: [] });
     }, TIMEOUT_MS);
 
     child.stdout?.on("data", (data) => {
@@ -84,7 +95,7 @@ export async function extractRoutesFromServer(entryPath: string): Promise<RouteI
       if (code !== 0) {
         console.warn(pc.yellow(`Failed to extract routes from server (exit code ${code})`));
         if (stderr) console.warn(pc.dim(stderr));
-        resolve([]);
+        resolve({ routes: [], processes: [] });
         return;
       }
 
@@ -105,17 +116,25 @@ export async function extractRoutesFromServer(entryPath: string): Promise<RouteI
             eventsSource: r.eventsType,
           };
         });
-        resolve(routes);
+
+        // Parse process definitions
+        const processes: ProcessInfo[] = (result.processes || []).map((p: any) => ({
+          name: p.name,
+          events: p.events,
+          commands: p.commands,
+        }));
+
+        resolve({ routes, processes });
       } catch (e) {
         console.warn(pc.yellow("Failed to parse route data from server"));
-        resolve([]);
+        resolve({ routes: [], processes: [] });
       }
     });
 
     child.on("error", (err) => {
       clearTimeout(timeout);
       console.warn(pc.yellow(`Failed to run entry file: ${err.message}`));
-      resolve([]);
+      resolve({ routes: [], processes: [] });
     });
   });
 }

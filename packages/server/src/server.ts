@@ -855,7 +855,30 @@ export class AppServer {
       }
     }
 
-    console.log(JSON.stringify({ routes }));
+    // Collect process definitions with their schemas
+    const processes = [];
+    const definitions = this.coreServices.processes.getDefinitions();
+    for (const [name, def] of definitions) {
+      const events: Record<string, string> = {};
+      if (def.events) {
+        for (const [eventName, schema] of Object.entries(def.events)) {
+          events[eventName] = zodSchemaToTs(schema);
+        }
+      }
+      const commands: Record<string, string> = {};
+      if (def.commands) {
+        for (const [cmdName, schema] of Object.entries(def.commands)) {
+          commands[cmdName] = zodSchemaToTs(schema);
+        }
+      }
+      processes.push({
+        name,
+        events: Object.keys(events).length > 0 ? events : undefined,
+        commands: Object.keys(commands).length > 0 ? commands : undefined,
+      });
+    }
+
+    console.log(JSON.stringify({ routes, processes }));
   }
 
   /**

@@ -18,7 +18,8 @@ export async function generateClientCommand(
   // Extract routes from server
   const entryPath = config.entry || "./src/index.ts";
   console.log(pc.dim(`Extracting routes from ${entryPath}...`));
-  const routes = await extractRoutesFromServer(entryPath);
+  const serverOutput = await extractRoutesFromServer(entryPath);
+  const routes = serverOutput.routes;
 
   if (routes.length === 0) {
     console.warn(pc.yellow("No routes found - generating empty client"));

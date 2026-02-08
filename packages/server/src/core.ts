@@ -74,6 +74,25 @@ export type EventSchemas = Record<string, z.ZodType<any>>;
 export interface EventRegistry {}
 
 /**
+ * Registry for process type definitions.
+ * Augment this interface to add typed process commands/events:
+ *
+ * @example
+ * ```ts
+ * declare module "@donkeylabs/server" {
+ *   interface ProcessRegistry {
+ *     "video-encoder": {
+ *       events: { progress: { percent: number }; complete: { outputPath: string } };
+ *       commands: { subscribe: { channel: string }; configUpdate: { settings: Record<string, any> } };
+ *     };
+ *   }
+ * }
+ * ```
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface ProcessRegistry {}
+
+/**
  * Define server-level events with Zod schemas.
  * Events defined here will be typed and available across the app.
  *
@@ -240,7 +259,7 @@ type ExtractServices<T extends readonly (keyof PluginRegistry)[] | undefined> =
   T extends readonly []
     ? {}
     : T extends readonly (infer K)[]
-      ? K extends keyof PluginRegistry
+      ? [K] extends [keyof PluginRegistry]
         ? { [P in K]: PluginRegistry[P] extends { service: infer S } ? S : unknown }
         : {}
       : {};

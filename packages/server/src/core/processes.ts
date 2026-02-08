@@ -136,6 +136,19 @@ export interface ProcessDefinition {
    * ```
    */
   events?: Record<string, import("zod").ZodType<any>>;
+  /**
+   * Command schemas for messages sent TO the process via send().
+   * Commands are validated at runtime using safeParse() before sending.
+   *
+   * @example
+   * ```ts
+   * commands: {
+   *   subscribe: z.object({ channel: z.string() }),
+   *   configUpdate: z.object({ settings: z.record(z.any()) }),
+   * }
+   * ```
+   */
+  commands?: Record<string, import("zod").ZodType<any>>;
   /** Called when a message is received from the process */
   onMessage?: (process: ManagedProcess, message: any) => void | Promise<void>;
   /** Called when the process crashes unexpectedly */
@@ -209,6 +222,8 @@ export interface Processes {
   getRunning(): Promise<ManagedProcess[]>;
   /** Send a message to a process via socket */
   send(processId: string, message: any): Promise<boolean>;
+  /** Get all registered process definitions */
+  getDefinitions(): Map<string, ProcessDefinition>;
   /** Start the service (recovery, monitoring) */
   start(): void;
   /** Shutdown the service and all managed processes */
@@ -552,7 +567,30 @@ export class ProcessesImpl implements Processes {
   }
 
   async send(processId: string, message: any): Promise<boolean> {
+    // Validate message against command schemas if defined
+    if (message && typeof message === "object" && message.type) {
+      const proc = await this.adapter.get(processId);
+      if (proc) {
+        const definition = this.definitions.get(proc.name);
+        if (definition?.commands) {
+          const commandSchema = definition.commands[message.type];
+          if (commandSchema) {
+            const result = commandSchema.safeParse(message);
+            if (!result.success) {
+              console.warn(
+                `[Processes] Command validation failed for '${message.type}' on ${proc.name}: ${result.error.message}`
+              );
+              return false;
+            }
+          }
+        }
+      }
+    }
     return this.socketServer.send(processId, message);
+  }
+
+  getDefinitions(): Map<string, ProcessDefinition> {
+    return this.definitions;
   }
 
   start(): void {
@@ -684,7 +722,23 @@ export class ProcessesImpl implements Processes {
     // Handle typed event messages from ProcessClient.emit()
     if (type === "event" && message.event) {
       const eventName = message.event as string;
-      const eventData = message.data ?? {};
+      let eventData = message.data ?? {};
+
+      // Validate event data against schema if defined
+      const definition = this.definitions.get(proc.name);
+      if (definition?.events) {
+        const eventSchema = definition.events[eventName];
+        if (eventSchema) {
+          const result = eventSchema.safeParse(eventData);
+          if (!result.success) {
+            console.warn(
+              `[Processes] Event validation failed for '${eventName}' on ${proc.name}: ${result.error.message}`
+            );
+            return; // Drop invalid events
+          }
+          eventData = result.data;
+        }
+      }
 
       // Emit to events service as "process.<name>.<event>"
       await this.emitEvent(`process.${proc.name}.${eventName}`, {

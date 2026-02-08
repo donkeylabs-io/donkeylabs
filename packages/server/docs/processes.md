@@ -323,8 +323,11 @@ interface ProcessDefinition {
   /** Environment variables */
   env?: Record<string, string>;
 
-  /** Typed events the process can emit */
+  /** Typed events the process can emit (validated at runtime) */
   events?: Record<string, ZodSchema>;
+
+  /** Typed command schemas for messages sent TO the process via send() (validated at runtime) */
+  commands?: Record<string, ZodSchema>;
 
   /** Heartbeat timeout in ms (default: 30000) */
   heartbeatTimeout?: number;
@@ -363,8 +366,11 @@ interface Processes {
   /** Get processes by name */
   getByName(name: string): ManagedProcess[];
 
-  /** Send a message to a running process */
+  /** Send a message to a running process (validated against command schemas if defined) */
   send(processId: string, message: any): Promise<boolean>;
+
+  /** Get all registered process definitions */
+  getDefinitions(): Map<string, ProcessDefinition>;
 
   /** Stop a process */
   stop(processId: string, signal?: NodeJS.Signals): Promise<void>;
@@ -574,6 +580,51 @@ ctx.core.events.on("process.stats", ({ processId, name, stats }) => {
 ## Server-to-Process Communication
 
 The server can send messages to running processes via `ctx.core.processes.send()`. The ProcessClient receives these messages through the `onMessage` callback.
+
+### Typed Commands
+
+Define command schemas to get runtime validation on `send()`. If a command fails validation, `send()` returns `false` and the message is not sent.
+
+```typescript
+import { z } from "zod";
+
+ctx.core.processes.register({
+  name: "ws-daemon",
+  config: {
+    command: "bun",
+    args: ["./workers/ws-daemon.ts"],
+  },
+  events: {
+    ready: z.object({ port: z.number() }),
+    clientCount: z.object({ count: z.number() }),
+  },
+  // Commands are validated before sending to the process
+  commands: {
+    subscribe: z.object({
+      type: z.literal("subscribe"),
+      channel: z.string(),
+    }),
+    configUpdate: z.object({
+      type: z.literal("configUpdate"),
+      settings: z.record(z.any()),
+    }),
+  },
+});
+
+// Valid command - sends successfully
+await ctx.core.processes.send(processId, {
+  type: "subscribe",
+  channel: "live-scores",
+}); // true
+
+// Invalid command - returns false, message not sent
+await ctx.core.processes.send(processId, {
+  type: "subscribe",
+  channel: 12345, // schema requires string
+}); // false
+```
+
+Commands without schemas are not validated (passthrough). The `type` field of the message is used to match against the command schema name.
 
 ### Sending Messages from Server
 

@@ -51,7 +51,9 @@ export {
   defineEvents,
   type EventRegistry,
   type EventSchemas,
+  // Registries
   type PluginRegistry,
+  type ProcessRegistry,
   type PluginHandlerRegistry,
   type PluginMiddlewareRegistry,
   type CoreServices,

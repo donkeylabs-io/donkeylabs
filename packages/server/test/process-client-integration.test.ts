@@ -14,6 +14,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 import {
   createProcesses,
   createEvents,
@@ -674,6 +675,176 @@ describe("ProcessClient Integration", () => {
       // Should still receive valid events
       const received = await collector.waitForEvent("process.test-worker.hello", 5000);
       expect(received).toBe(true);
+    });
+  });
+
+  describe("Command Validation", () => {
+    it("should reject send() when command schema validation fails", async () => {
+      const collector = createEventCollector(events, [
+        "process.test-worker.ready",
+      ]);
+
+      processes.register({
+        name: "test-worker",
+        config: {
+          command: BUN_PATH,
+          args: [TEST_WORKER_PATH, "server-message"],
+        },
+        commands: {
+          subscribe: z.object({
+            type: z.literal("subscribe"),
+            channel: z.string(),
+          }),
+        },
+      });
+
+      const processId = await processes.spawn("test-worker");
+      await collector.waitForEvent("process.test-worker.ready", 5000);
+
+      // Send an invalid command (channel should be string, not number)
+      const sent = await processes.send(processId, {
+        type: "subscribe",
+        channel: 12345, // Invalid: should be string
+      });
+      expect(sent).toBe(false);
+
+      await processes.stop(processId);
+    });
+
+    it("should allow send() when command schema validation passes", async () => {
+      const collector = createEventCollector(events, [
+        "process.test-worker.ready",
+        "process.test-worker.server-message-received",
+      ]);
+
+      processes.register({
+        name: "test-worker",
+        config: {
+          command: BUN_PATH,
+          args: [TEST_WORKER_PATH, "server-message"],
+        },
+        commands: {
+          subscribe: z.object({
+            type: z.literal("subscribe"),
+            channel: z.string(),
+          }),
+        },
+      });
+
+      const processId = await processes.spawn("test-worker");
+      await collector.waitForEvent("process.test-worker.ready", 5000);
+
+      // Send a valid command
+      const sent = await processes.send(processId, {
+        type: "subscribe",
+        channel: "live-scores",
+      });
+      expect(sent).toBe(true);
+
+      // Verify the worker received it
+      const received = await collector.waitForEvent(
+        "process.test-worker.server-message-received",
+        5000
+      );
+      expect(received).toBe(true);
+
+      await processes.stop(processId);
+    });
+
+    it("should allow send() for commands without schemas (passthrough)", async () => {
+      const collector = createEventCollector(events, [
+        "process.test-worker.ready",
+        "process.test-worker.server-message-received",
+      ]);
+
+      processes.register({
+        name: "test-worker",
+        config: {
+          command: BUN_PATH,
+          args: [TEST_WORKER_PATH, "server-message"],
+        },
+        // No commands defined - all messages pass through
+      });
+
+      const processId = await processes.spawn("test-worker");
+      await collector.waitForEvent("process.test-worker.ready", 5000);
+
+      // Send any message - should pass through without validation
+      const sent = await processes.send(processId, {
+        type: "arbitrary",
+        data: { anything: true },
+      });
+      expect(sent).toBe(true);
+
+      await processes.stop(processId);
+    });
+  });
+
+  describe("Event Validation", () => {
+    it("should drop events that fail schema validation", async () => {
+      const validEvents: any[] = [];
+      const invalidEvents: any[] = [];
+
+      // Listen for both valid and invalid event names
+      events.on("process.test-worker.progress", (data) => {
+        validEvents.push(data);
+      });
+
+      processes.register({
+        name: "test-worker",
+        config: {
+          command: BUN_PATH,
+          args: [TEST_WORKER_PATH, "emit-events"],
+        },
+        events: {
+          // Strict schema - progress must have percent as number
+          progress: z.object({
+            percent: z.number(),
+            step: z.number(),
+          }),
+          // Allow other events through
+          started: z.object({}).passthrough(),
+          complete: z.object({}).passthrough(),
+        },
+      });
+
+      await processes.spawn("test-worker");
+
+      // Wait for events to come through
+      await waitFor(() => validEvents.length >= 5, 5000);
+
+      // All 5 progress events should have been validated and passed through
+      expect(validEvents.length).toBe(5);
+      for (const event of validEvents) {
+        expect(typeof event.data?.percent).toBe("number");
+      }
+    });
+  });
+
+  describe("getDefinitions()", () => {
+    it("should return registered process definitions", () => {
+      processes.register({
+        name: "worker-a",
+        config: { command: "echo", args: ["hello"] },
+        events: { done: z.object({ result: z.string() }) },
+        commands: { start: z.object({ type: z.literal("start") }) },
+      });
+
+      processes.register({
+        name: "worker-b",
+        config: { command: "echo", args: ["world"] },
+      });
+
+      const definitions = processes.getDefinitions();
+      expect(definitions.size).toBe(2);
+      expect(definitions.has("worker-a")).toBe(true);
+      expect(definitions.has("worker-b")).toBe(true);
+
+      const defA = definitions.get("worker-a")!;
+      expect(defA.events).toBeDefined();
+      expect(defA.commands).toBeDefined();
+      expect(defA.events!.done).toBeDefined();
+      expect(defA.commands!.start).toBeDefined();
     });
   });
 });
