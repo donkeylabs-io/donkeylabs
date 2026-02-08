@@ -13,11 +13,22 @@ const scenario = process.argv[2] ?? "default";
 const exitAfter = process.argv[3] ? parseInt(process.argv[3], 10) : 0;
 
 async function main() {
+  // Collect server messages for scenarios that need them
+  const serverMessages: any[] = [];
+
   // Test auto-connect via environment variables
   const client = await ProcessClient.connect({
     heartbeatInterval: 1000, // 1 second for faster testing
     reconnectInterval: 500,
     maxReconnectAttempts: 10,
+    onMessage: async (message) => {
+      serverMessages.push(message);
+      // Echo server messages back as events so the test can observe them
+      await client.emit("server-message-received", {
+        received: message,
+        receivedAt: Date.now(),
+      });
+    },
   });
 
   console.log(`[TestWorker] Connected as ${client.processId}`);
@@ -87,6 +98,28 @@ async function main() {
     case "metadata-echo":
       // Echo back the metadata we received
       await client.emit("metadata-received", client.metadata);
+      break;
+
+    case "server-message":
+      // Stay running and echo back any messages from the server
+      await client.emit("ready", { waitingForMessages: true });
+
+      // Keep alive until SIGTERM or 10s timeout
+      const timeout = setTimeout(() => {
+        client.emit("timeout", { messagesReceived: serverMessages.length });
+        client.disconnect();
+        process.exit(0);
+      }, 10000);
+
+      process.on("SIGTERM", async () => {
+        clearTimeout(timeout);
+        await client.emit("stopping", { messagesReceived: serverMessages.length });
+        client.disconnect();
+        process.exit(0);
+      });
+
+      // Keep process alive
+      await new Promise(() => {});
       break;
 
     case "reconnect-test":

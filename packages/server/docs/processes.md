@@ -269,6 +269,11 @@ client.connected; // true | false
 // Emit a typed event to the server
 await client.emit("progress", { percent: 50, fps: 30 });
 
+// Register a handler for server-sent messages (alternative to onMessage in connect options)
+client.onMessage((message) => {
+  console.log("Received from server:", message);
+});
+
 // Disconnect when done
 client.disconnect();
 ```
@@ -357,6 +362,9 @@ interface Processes {
 
   /** Get processes by name */
   getByName(name: string): ManagedProcess[];
+
+  /** Send a message to a running process */
+  send(processId: string, message: any): Promise<boolean>;
 
   /** Stop a process */
   stop(processId: string, signal?: NodeJS.Signals): Promise<void>;
@@ -563,6 +571,89 @@ ctx.core.events.on("process.stats", ({ processId, name, stats }) => {
 });
 ```
 
+## Server-to-Process Communication
+
+The server can send messages to running processes via `ctx.core.processes.send()`. The ProcessClient receives these messages through the `onMessage` callback.
+
+### Sending Messages from Server
+
+```typescript
+// In a route handler or service
+await ctx.core.processes.send(processId, {
+  type: "subscribe",
+  channel: "live-scores",
+});
+
+await ctx.core.processes.send(processId, {
+  type: "config_update",
+  settings: { maxConnections: 100 },
+});
+```
+
+### Receiving Messages in Worker
+
+```typescript
+// Option 1: In connect options
+const client = await ProcessClient.connect({
+  onMessage: (message) => {
+    switch (message.type) {
+      case "subscribe":
+        subscribeToChannel(message.channel);
+        break;
+      case "config_update":
+        applyConfig(message.settings);
+        break;
+    }
+  },
+});
+
+// Option 2: Register handler after connecting
+const client = await ProcessClient.connect();
+client.onMessage((message) => {
+  console.log("Received:", message);
+});
+```
+
+### Example: WebSocket Daemon with Server Commands
+
+```typescript
+// Server: define and spawn the WebSocket daemon
+server.getCore().processes.define("ws-daemon", {
+  command: "bun",
+  args: ["./workers/ws-daemon.ts"],
+  events: {
+    ready: z.object({ port: z.number() }),
+    clientCount: z.object({ count: z.number() }),
+  },
+});
+
+const processId = await ctx.core.processes.spawn("ws-daemon", {
+  metadata: { port: 8080 },
+});
+
+// Server: send commands to the daemon
+await ctx.core.processes.send(processId, {
+  type: "broadcast",
+  message: "Server maintenance in 5 minutes",
+});
+
+// Worker: ws-daemon.ts
+import { ProcessClient } from "@donkeylabs/server/process-client";
+
+const client = await ProcessClient.connect({
+  onMessage: (message) => {
+    if (message.type === "broadcast") {
+      // Broadcast to all connected WebSocket clients
+      for (const ws of connections) {
+        ws.send(JSON.stringify({ type: "announcement", text: message.message }));
+      }
+    }
+  },
+});
+
+client.emit("ready", { port: client.metadata.port });
+```
+
 ## Heartbeat Monitoring
 
 The ProcessClient automatically sends heartbeats. If heartbeats stop:
@@ -651,3 +742,4 @@ process.on("SIGTERM", () => client.disconnect());
 3. **Use typed events** - Define event schemas for type safety
 4. **Monitor heartbeats** - Set appropriate timeout for your use case
 5. **Keep wrappers thin** - Business logic should be in the actual process
+6. **Use onMessage for commands** - Register `onMessage` to receive server commands for stateful workers

@@ -8,7 +8,11 @@
  * ```ts
  * import { ProcessClient } from "@donkeylabs/server/process-client";
  *
- * const client = await ProcessClient.connect();
+ * const client = await ProcessClient.connect({
+ *   onMessage: (message) => {
+ *     if (message.type === "subscribe") { ... }
+ *   },
+ * });
  *
  * // Access metadata passed during spawn
  * const { inputPath, outputPath } = client.metadata;
@@ -83,6 +87,8 @@ export interface ProcessClientConfig {
   maxReconnectAttempts?: number;
   /** Stats emission configuration */
   stats?: StatsConfig;
+  /** Callback for messages sent from the server via ctx.core.processes.send() */
+  onMessage?: (message: any) => void | Promise<void>;
 }
 
 export interface ProcessClient {
@@ -94,6 +100,8 @@ export interface ProcessClient {
   readonly connected: boolean;
   /** Emit a typed event to the server */
   emit(event: string, data?: Record<string, any>): Promise<boolean>;
+  /** Register a handler for messages sent from the server via ctx.core.processes.send() */
+  onMessage(handler: (message: any) => void | Promise<void>): void;
   /** Disconnect from the server */
   disconnect(): void;
 }
@@ -120,6 +128,7 @@ class ProcessClientImpl implements ProcessClient {
   private reconnectAttempts = 0;
   private isDisconnecting = false;
   private _connected = false;
+  private messageHandler?: (message: any) => void | Promise<void>;
 
   // For CPU percentage calculation
   private lastCpuUsage?: NodeJS.CpuUsage;
@@ -134,6 +143,7 @@ class ProcessClientImpl implements ProcessClient {
     this.reconnectInterval = config.reconnectInterval ?? 2000;
     this.maxReconnectAttempts = config.maxReconnectAttempts ?? 30;
     this.statsConfig = config.stats ?? { enabled: false };
+    if (config.onMessage) this.messageHandler = config.onMessage;
   }
 
   get connected(): boolean {
@@ -221,9 +231,22 @@ class ProcessClientImpl implements ProcessClient {
   }
 
   private handleServerMessage(message: any): void {
-    // Server can send messages to the process (e.g., "stop", "config update")
-    // For now, just log them
-    console.log(`[ProcessClient] Received from server:`, message);
+    if (this.messageHandler) {
+      try {
+        const result = this.messageHandler(message);
+        if (result instanceof Promise) {
+          result.catch((err) => {
+            console.error(`[ProcessClient] Error in onMessage handler:`, err);
+          });
+        }
+      } catch (err) {
+        console.error(`[ProcessClient] Error in onMessage handler:`, err);
+      }
+    }
+  }
+
+  onMessage(handler: (message: any) => void | Promise<void>): void {
+    this.messageHandler = handler;
   }
 
   private scheduleReconnect(): void {
@@ -412,6 +435,14 @@ export function createProcessClient(config: ProcessClientConfig): ProcessClient 
  * const client = await ProcessClient.connect({
  *   stats: { enabled: true, interval: 2000 }
  * });
+ *
+ * // With server message handling
+ * const client = await ProcessClient.connect({
+ *   onMessage: (message) => {
+ *     if (message.type === "subscribe") { ... }
+ *     if (message.type === "config_update") { ... }
+ *   },
+ * });
  * ```
  */
 export async function connect(options?: {
@@ -420,6 +451,8 @@ export async function connect(options?: {
   maxReconnectAttempts?: number;
   /** Enable real-time CPU/memory stats emission */
   stats?: StatsConfig;
+  /** Callback for messages sent from the server via ctx.core.processes.send() */
+  onMessage?: (message: any) => void | Promise<void>;
 }): Promise<ProcessClient> {
   const processId = process.env.DONKEYLABS_PROCESS_ID;
   const socketPath = process.env.DONKEYLABS_SOCKET_PATH;

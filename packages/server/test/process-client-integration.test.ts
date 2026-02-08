@@ -544,6 +544,93 @@ describe("ProcessClient Integration", () => {
     });
   });
 
+  describe("Server-to-Process Messaging (onMessage)", () => {
+    it("should receive messages sent from server via processes.send()", async () => {
+      const collector = createEventCollector(events, [
+        "process.test-worker.ready",
+        "process.test-worker.server-message-received",
+      ]);
+
+      processes.register({
+        name: "test-worker",
+        config: {
+          command: BUN_PATH,
+          args: [TEST_WORKER_PATH, "server-message"],
+        },
+      });
+
+      const processId = await processes.spawn("test-worker");
+
+      // Wait for the worker to signal it's ready
+      const ready = await collector.waitForEvent("process.test-worker.ready", 5000);
+      expect(ready).toBe(true);
+
+      // Send a message from server to the process
+      const sent = await processes.send(processId, {
+        type: "subscribe",
+        channel: "live-scores",
+      });
+      expect(sent).toBe(true);
+
+      // Wait for the worker to echo it back as an event
+      const received = await collector.waitForEvent(
+        "process.test-worker.server-message-received",
+        5000
+      );
+      expect(received).toBe(true);
+
+      // Verify the echoed message content
+      const echoEvents = collector.getByEvent("process.test-worker.server-message-received");
+      expect(echoEvents.length).toBeGreaterThanOrEqual(1);
+      expect(echoEvents[0]?.data?.data?.received?.type).toBe("subscribe");
+      expect(echoEvents[0]?.data?.data?.received?.channel).toBe("live-scores");
+
+      await processes.stop(processId);
+    });
+
+    it("should receive multiple messages in order", async () => {
+      const echoEvents: any[] = [];
+      events.on("process.test-worker.server-message-received", (data) => {
+        echoEvents.push(data);
+      });
+
+      const collector = createEventCollector(events, [
+        "process.test-worker.ready",
+      ]);
+
+      processes.register({
+        name: "test-worker",
+        config: {
+          command: BUN_PATH,
+          args: [TEST_WORKER_PATH, "server-message"],
+        },
+      });
+
+      const processId = await processes.spawn("test-worker");
+      await collector.waitForEvent("process.test-worker.ready", 5000);
+
+      // Send multiple messages
+      await processes.send(processId, { type: "cmd", seq: 1 });
+      await processes.send(processId, { type: "cmd", seq: 2 });
+      await processes.send(processId, { type: "cmd", seq: 3 });
+
+      // Wait for all 3 echoes
+      await waitFor(() => echoEvents.length >= 3, 5000);
+
+      expect(echoEvents.length).toBe(3);
+      expect(echoEvents[0]?.data?.received?.seq).toBe(1);
+      expect(echoEvents[1]?.data?.received?.seq).toBe(2);
+      expect(echoEvents[2]?.data?.received?.seq).toBe(3);
+
+      await processes.stop(processId);
+    });
+
+    it("should return false when sending to a non-existent process", async () => {
+      const sent = await processes.send("non-existent-id", { type: "test" });
+      expect(sent).toBe(false);
+    });
+  });
+
   describe("Error Handling", () => {
     it("should handle process that fails to start", async () => {
       const collector = createEventCollector(events, ["process.crashed"]);
@@ -634,5 +721,30 @@ describe("ProcessClient Unit Tests", () => {
     expect(client.processId).toBe("test-process-123");
     expect(client.metadata).toEqual({ test: true });
     expect(client.connected).toBe(false);
+  });
+
+  it("should expose onMessage method on created client", async () => {
+    const { createProcessClient } = await import("../src/process-client");
+
+    const client = createProcessClient({
+      processId: "test-process-456",
+      socketPath: "/tmp/test-socket.sock",
+    });
+
+    expect(client.onMessage).toBeInstanceOf(Function);
+  });
+
+  it("should accept onMessage in config", async () => {
+    const { createProcessClient } = await import("../src/process-client");
+
+    const messages: any[] = [];
+    const client = createProcessClient({
+      processId: "test-process-789",
+      socketPath: "/tmp/test-socket.sock",
+      onMessage: (msg) => messages.push(msg),
+    });
+
+    expect(client).toBeDefined();
+    expect(client.onMessage).toBeInstanceOf(Function);
   });
 });
