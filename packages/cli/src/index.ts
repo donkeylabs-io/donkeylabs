@@ -20,6 +20,7 @@ const { positionals, values } = parseArgs({
     local: { type: "boolean", short: "l" },
     list: { type: "boolean" },
     output: { type: "string", short: "o" },
+    adapter: { type: "string" },
     all: { type: "boolean", short: "a" },
     check: { type: "boolean", short: "c" },
     "skip-docs": { type: "boolean" },
@@ -41,6 +42,7 @@ ${pc.bold("Commands:")}
   ${pc.cyan("init")}              Initialize a new project
   ${pc.cyan("add")}               Add optional plugins (images, auth, etc.)
   ${pc.cyan("generate")}          Generate types (registry, context, client)
+  ${pc.cyan("generate-client")}   Generate API client only (TypeScript, Swift, SvelteKit)
   ${pc.cyan("plugin")}            Plugin management
   ${pc.cyan("update")}            Check and install package updates
   ${pc.cyan("docs")}              Sync documentation from installed package
@@ -56,6 +58,7 @@ ${pc.bold("Options:")}
   -v, --version           Show version number
   -t, --type <type>       Project type for init (server, sveltekit)
   -l, --local             Use local workspace packages (for monorepo dev)
+  --adapter <adapter>     Client adapter (typescript, sveltekit, swift, or package name)
 
   ${pc.bold("Examples:")}
    donkeylabs                       # Interactive menu
@@ -63,6 +66,9 @@ ${pc.bold("Options:")}
    donkeylabs init --type server    # Server-only project
    donkeylabs init --type sveltekit # SvelteKit + adapter project
    donkeylabs generate
+   donkeylabs generate-client -o ./clients/typescript
+   donkeylabs generate-client -o ./ios/ApiClient --adapter swift
+   donkeylabs generate-client --adapter sveltekit
    donkeylabs plugin create myPlugin
    donkeylabs update                # Interactive package update
    donkeylabs update --check        # Check for updates only
@@ -113,6 +119,15 @@ async function main() {
     case "gen":
       const { generateCommand } = await import("./commands/generate");
       await generateCommand(positionals.slice(1));
+      break;
+
+    case "generate-client":
+    case "gen-client":
+      const { generateClientCommand } = await import("./commands/generate-client");
+      await generateClientCommand(positionals.slice(1), {
+        output: values.output,
+        adapter: values.adapter,
+      });
       break;
 
     case "plugin":
