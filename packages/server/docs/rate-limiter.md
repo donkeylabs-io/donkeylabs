@@ -420,46 +420,41 @@ interface RateLimitAdapter {
 }
 ```
 
-### Redis Adapter Example
+### Built-in Redis Adapter
+
+A production-ready Redis adapter is included. Requires `ioredis` as a peer dependency (`bun add ioredis`).
 
 ```ts
-import { createRateLimiter, type RateLimitAdapter } from "./core/rate-limiter";
 import Redis from "ioredis";
+import { RedisRateLimitAdapter } from "@donkeylabs/server/core";
 
-class RedisRateLimitAdapter implements RateLimitAdapter {
-  constructor(private redis: Redis) {}
+const redis = new Redis("redis://localhost:6379");
 
-  async increment(key: string, windowMs: number): Promise<{ count: number; resetAt: Date }> {
-    const now = Date.now();
-    const windowKey = `${key}:${Math.floor(now / windowMs)}`;
-
-    const count = await this.redis.incr(windowKey);
-
-    if (count === 1) {
-      // Set expiry on first request in window
-      await this.redis.pexpire(windowKey, windowMs);
-    }
-
-    const resetAt = new Date(Math.ceil(now / windowMs) * windowMs);
-
-    return { count, resetAt };
-  }
-
-  async get(key: string): Promise<{ count: number; resetAt: Date } | null> {
-    // Implementation for getting current state
-  }
-
-  async reset(key: string): Promise<void> {
-    const keys = await this.redis.keys(`${key}:*`);
-    if (keys.length > 0) {
-      await this.redis.del(...keys);
-    }
-  }
-}
-
-const rateLimiter = createRateLimiter({
-  adapter: new RedisRateLimitAdapter(new Redis()),
+const server = new AppServer({
+  rateLimiter: {
+    adapter: new RedisRateLimitAdapter(redis, { prefix: "myapp:" }),
+  },
 });
+
+// Remember to disconnect on shutdown
+server.onShutdown(() => redis.disconnect());
+```
+
+**Features:**
+- Atomic Lua script for `INCR` + conditional `PEXPIRE` (prevents race conditions)
+- Pipeline `GET` + `PTTL` in a single round-trip for `get()`
+- Optional `prefix` for key namespace isolation in shared Redis instances
+
+### Custom Redis Adapter Example
+
+For custom requirements, implement `RateLimitAdapter` directly:
+
+```ts
+import { type RateLimitAdapter } from "@donkeylabs/server/core";
+
+class MyCustomRateLimitAdapter implements RateLimitAdapter {
+  // Implement increment, get, reset
+}
 ```
 
 ---

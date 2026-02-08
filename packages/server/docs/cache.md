@@ -322,51 +322,44 @@ interface CacheAdapter {
 }
 ```
 
-### Redis Adapter Example
+### Built-in Redis Adapter
+
+A production-ready Redis adapter is included. Requires `ioredis` as a peer dependency (`bun add ioredis`).
 
 ```ts
-import { createCache, type CacheAdapter } from "./core/cache";
 import Redis from "ioredis";
+import { RedisCacheAdapter } from "@donkeylabs/server/core";
 
-class RedisCacheAdapter implements CacheAdapter {
-  constructor(private redis: Redis) {}
+const redis = new Redis("redis://localhost:6379");
 
-  async get<T>(key: string): Promise<T | null> {
-    const value = await this.redis.get(key);
-    return value ? JSON.parse(value) : null;
-  }
-
-  async set<T>(key: string, value: T, ttlMs?: number): Promise<void> {
-    const serialized = JSON.stringify(value);
-    if (ttlMs) {
-      await this.redis.set(key, serialized, "PX", ttlMs);
-    } else {
-      await this.redis.set(key, serialized);
-    }
-  }
-
-  async delete(key: string): Promise<boolean> {
-    const result = await this.redis.del(key);
-    return result > 0;
-  }
-
-  async has(key: string): Promise<boolean> {
-    return (await this.redis.exists(key)) === 1;
-  }
-
-  async clear(): Promise<void> {
-    await this.redis.flushdb();
-  }
-
-  async keys(pattern?: string): Promise<string[]> {
-    return this.redis.keys(pattern ?? "*");
-  }
-}
-
-// Use Redis adapter
-const cache = createCache({
-  adapter: new RedisCacheAdapter(new Redis()),
+const server = new AppServer({
+  cache: {
+    adapter: new RedisCacheAdapter(redis, { prefix: "myapp:" }),
+  },
 });
+
+// Remember to disconnect on shutdown
+server.onShutdown(() => redis.disconnect());
+```
+
+**Features:**
+- JSON serialization for values
+- `SET key val PX ttlMs` for TTL support
+- `SCAN` (not `KEYS`) for production-safe key listing on large datasets
+- Optional `prefix` for key namespace isolation in shared Redis instances
+- With prefix: `clear()` uses SCAN + DEL only for prefixed keys
+- Without prefix: `clear()` uses `FLUSHDB`
+
+### Custom Redis Adapter Example
+
+For custom requirements, implement `CacheAdapter` directly:
+
+```ts
+import { type CacheAdapter } from "@donkeylabs/server/core";
+
+class MyCustomCacheAdapter implements CacheAdapter {
+  // Implement get, set, delete, has, clear, keys
+}
 ```
 
 ---

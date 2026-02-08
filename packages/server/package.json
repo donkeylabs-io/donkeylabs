@@ -75,7 +75,8 @@
     "@aws-sdk/s3-request-presigner": "^3.0.0",
     "@playwright/test": "^1.40.0",
     "pg": "^8.0.0",
-    "mysql2": "^3.0.0"
+    "mysql2": "^3.0.0",
+    "ioredis": "^5.0.0"
   },
   "peerDependenciesMeta": {
     "@aws-sdk/client-s3": {
@@ -91,6 +92,9 @@
       "optional": true
     },
     "mysql2": {
+      "optional": true
+    },
+    "ioredis": {
       "optional": true
     }
   },

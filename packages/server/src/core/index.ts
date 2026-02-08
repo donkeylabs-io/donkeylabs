@@ -283,6 +283,16 @@ export { LocalStorageAdapter } from "./storage-adapter-local";
 export { S3StorageAdapter } from "./storage-adapter-s3";
 
 export {
+  RedisCacheAdapter,
+  type RedisCacheAdapterConfig,
+} from "./cache-adapter-redis";
+
+export {
+  RedisRateLimitAdapter,
+  type RedisRateLimitAdapterConfig,
+} from "./rate-limit-adapter-redis";
+
+export {
   type Logs,
   type LogSource,
   type PersistentLogEntry,
