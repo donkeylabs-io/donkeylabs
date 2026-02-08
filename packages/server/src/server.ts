@@ -56,6 +56,7 @@ import {
 import { createHealth, createDbHealthCheck, type HealthConfig } from "./core/health";
 import type { AdminConfig } from "./admin";
 import { zodSchemaToTs } from "./generator/zod-to-ts";
+import { CORE_EVENT_DEFINITIONS } from "./core/core-events";
 
 export interface TypeGenerationConfig {
   /** Output path for generated client types (e.g., "./src/lib/api.ts") */
@@ -878,7 +879,7 @@ export class AppServer {
       });
     }
 
-    console.log(JSON.stringify({ routes, processes }));
+    console.log(JSON.stringify({ routes, processes, coreEvents: CORE_EVENT_DEFINITIONS }));
   }
 
   /**

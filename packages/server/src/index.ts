@@ -112,6 +112,9 @@ export {
   type EventMetadata,
 } from "./core/index";
 
+// Core event types
+export { type CoreEventMap, CORE_EVENT_DEFINITIONS } from "./core/core-events";
+
 // Health checks
 export {
   type Health,

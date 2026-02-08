@@ -45,6 +45,7 @@ export interface ProcessInfo {
 export interface ServerOutput {
   routes: RouteInfo[];
   processes: ProcessInfo[];
+  coreEvents?: Record<string, string>;
 }
 
 /**
@@ -124,7 +125,7 @@ export async function extractRoutesFromServer(entryPath: string): Promise<Server
           commands: p.commands,
         }));
 
-        resolve({ routes, processes });
+        resolve({ routes, processes, coreEvents: result.coreEvents });
       } catch (e) {
         console.warn(pc.yellow("Failed to parse route data from server"));
         resolve({ routes: [], processes: [] });

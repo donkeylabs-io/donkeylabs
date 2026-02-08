@@ -1,5 +1,7 @@
 // Core Services - Re-export all services
 
+export { type CoreEventMap, CORE_EVENT_DEFINITIONS } from "./core-events";
+
 export {
   type Logger,
   type LogLevel,

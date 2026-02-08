@@ -18,6 +18,7 @@ import type { WebSocketService } from "./core/websocket";
 import type { Storage } from "./core/storage";
 import type { Logs } from "./core/logs";
 import type { Health } from "./core/health";
+import type { CoreEventMap } from "./core/core-events";
 
 // ============================================
 // Auto-detect caller module for plugin define()
@@ -71,7 +72,7 @@ export type EventSchemas = Record<string, z.ZodType<any>>;
  * ```
  */
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface EventRegistry {}
+export interface EventRegistry extends CoreEventMap {}
 
 /**
  * Registry for process type definitions.
