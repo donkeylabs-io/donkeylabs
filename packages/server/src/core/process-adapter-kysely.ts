@@ -49,12 +49,12 @@ export class KyselyProcessAdapter implements ProcessAdapter {
     this.db = db as Kysely<Database>;
     this.cleanupDays = config.cleanupDays ?? 7;
 
-    // Start cleanup timer
+    // Start cleanup timer - delay initial cleanup to allow migrations to run first
     if (this.cleanupDays > 0) {
       const interval = config.cleanupInterval ?? 3600000; // 1 hour
       this.cleanupTimer = setInterval(() => this.cleanup(), interval);
-      // Run cleanup on startup
-      this.cleanup();
+      // Delay initial cleanup to ensure table exists after migrations
+      setTimeout(() => this.cleanup(), 5000);
     }
   }
 
@@ -226,19 +226,28 @@ export class KyselyProcessAdapter implements ProcessAdapter {
   async getOrphaned(): Promise<ManagedProcess[]> {
     if (this.checkStopped()) return [];
 
-    const rows = await this.db
-      .selectFrom("__donkeylabs_processes__")
-      .selectAll()
-      .where((eb) =>
-        eb.or([
-          eb("status", "=", "running"),
-          eb("status", "=", "spawning"),
-          eb("status", "=", "orphaned"),
-        ])
-      )
-      .execute();
+    try {
+      const rows = await this.db
+        .selectFrom("__donkeylabs_processes__")
+        .selectAll()
+        .where((eb) =>
+          eb.or([
+            eb("status", "=", "running"),
+            eb("status", "=", "spawning"),
+            eb("status", "=", "orphaned"),
+          ])
+        )
+        .execute();
 
-    return rows.map((r) => this.rowToProcess(r));
+      return rows.map((r) => this.rowToProcess(r));
+    } catch (err: any) {
+      // Silently ignore if table doesn't exist yet (migrations not run)
+      const message = err?.message?.toLowerCase() || "";
+      if (message.includes("does not exist") || message.includes("no such table")) {
+        return [];
+      }
+      throw err;
+    }
   }
 
   private rowToProcess(row: ProcessesTable): ManagedProcess {
